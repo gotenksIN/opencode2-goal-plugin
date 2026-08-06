@@ -1,0 +1,33 @@
+{
+  "name": "opencode2-goal-plugin",
+  "version": "1.0.0",
+  "description": "Persistent session goals for OpenCode V2",
+  "type": "module",
+  "exports": "./index.ts",
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "docs", "dist"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-next-16813"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Omkar Chandorkar",
+    "email": "gotenksIN@aospa.co"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gotenksIN/opencode2-goal-plugin.git"
+  },
+  "homepage": "https://github.com/gotenksIN/opencode2-goal-plugin"
+}
