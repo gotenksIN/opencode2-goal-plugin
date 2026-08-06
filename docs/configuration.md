@@ -7,7 +7,7 @@ Add the plugin package and command configuration to your OpenCode V2 configurati
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode2-goal-plugin@1.0.0",
+      "package": "opencode2-goal-plugin@1.0.1",
       "options": {
         "autoContinue": true,
         "continuationIntervalMs": 1500,
