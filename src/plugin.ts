@@ -126,7 +126,7 @@ export default Plugin.define({
           }
           const updated = await controller.update(toolCtx.sessionID, value.action, value)
           if (value.action === "complete") evidenceCandidates.delete(toolCtx.sessionID)
-          if (value.action !== "resume") {
+          if (value.action === "pause" || value.action === "blocked") {
             await ctx.session.interrupt({ sessionID: toolCtx.sessionID }).catch(() => undefined)
           }
           return { content: format(updated) }
