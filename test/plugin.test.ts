@@ -11,11 +11,16 @@ interface RegisteredTool {
 const root = join(import.meta.dir, ".plugin")
 afterEach(() => rm(root, { recursive: true, force: true }))
 
-async function setupPlugin(name: string) {
+interface HarnessOptions {
+  childSessions?: Set<string>
+}
+
+async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const tools: RegisteredTool[] = []
   const commands = new Map<string, Record<string, unknown>>()
   const sessionHooks = new Map<string, Function>()
   const toolHooks = new Map<string, Function>()
+  const interrupts: string[] = []
   const ctx = {
     options: { autoContinue: false, dataFile: join(root, `${name}.json`) },
     tool: {
@@ -34,13 +39,19 @@ async function setupPlugin(name: string) {
     session: {
       hook: async (hookName: string, callback: Function) => { sessionHooks.set(hookName, callback) },
       prompt: async () => ({}),
-      interrupt: async () => ({}),
+      get: async (input: { sessionID: string }) => {
+        return {
+          id: input.sessionID,
+          ...(options.childSessions?.has(input.sessionID) ? { parentID: "ses_parent" } : {}),
+        }
+      },
+      interrupt: async (input: { sessionID: string }) => { interrupts.push(input.sessionID) },
     },
     event: { subscribe: async () => ({ async *[Symbol.asyncIterator]() {} }) },
   }
   const cleanup = await plugin.setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
-  return { cleanup, commands, sessionHooks, toolHooks, tools, tool }
+  return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts }
 }
 
 async function recordSuccessfulTool(toolHooks: Map<string, Function>, sessionID: string, id: string) {
@@ -125,6 +136,37 @@ describe("completion evidence candidates", () => {
       action: "complete",
       evidence: { source: "verification", summary: "Wrong session", success: true, toolCallID: "session-a-id" },
     }, { sessionID: "b" })).rejects.toThrow("for this session")
+    await harness.cleanup?.()
+  })
+})
+
+describe("subagent session interrupts", () => {
+  test("clear_goal does not interrupt a subagent session", async () => {
+    const harness = await setupPlugin("clear-child", { childSessions: new Set(["child"]) })
+    await harness.tool("create_goal").execute({ objective: "Subagent task" }, { sessionID: "child" })
+    const result = await harness.tool("clear_goal").execute({}, { sessionID: "child" })
+    expect(result.content).toBe("Goal cleared.")
+    expect(harness.interrupts).toEqual([])
+    await harness.cleanup?.()
+  })
+
+  test("update_goal pause and blocked do not interrupt a subagent session", async () => {
+    const harness = await setupPlugin("pause-child", { childSessions: new Set(["child-a", "child-b"]) })
+    await harness.tool("create_goal").execute({ objective: "Pause me" }, { sessionID: "child-a" })
+    await harness.tool("update_goal").execute({ action: "pause" }, { sessionID: "child-a" })
+
+    await harness.tool("create_goal").execute({ objective: "Block me" }, { sessionID: "child-b" })
+    await harness.tool("update_goal").execute({ action: "blocked", blocker: "Waiting" }, { sessionID: "child-b" })
+
+    expect(harness.interrupts).toEqual([])
+    await harness.cleanup?.()
+  })
+
+  test("clear_goal still interrupts a top-level session", async () => {
+    const harness = await setupPlugin("clear-top")
+    await harness.tool("create_goal").execute({ objective: "Top level" }, { sessionID: "top" })
+    await harness.tool("clear_goal").execute({}, { sessionID: "top" })
+    expect(harness.interrupts).toEqual(["top"])
     await harness.cleanup?.()
   })
 })

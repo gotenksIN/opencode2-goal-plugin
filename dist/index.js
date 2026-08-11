@@ -331,6 +331,21 @@ var plugin_default = Plugin.define({
     const timers = new Set;
     let stopped = false;
     let eventIterator;
+    const isSubagentSession = async (sessionID) => {
+      try {
+        const session = await ctx.session.get({ sessionID });
+        return typeof session.parentID === "string" && session.parentID.length > 0;
+      } catch {
+        return false;
+      }
+    };
+    const interruptSession = async (sessionID) => {
+      if (await isSubagentSession(sessionID))
+        return;
+      await ctx.session.interrupt({ sessionID }).catch(() => {
+        return;
+      });
+    };
     await ctx.tool.transform((tools) => {
       tools.add({
         name: "get_goal",
@@ -392,9 +407,7 @@ var plugin_default = Plugin.define({
           if (value.action === "complete")
             evidenceCandidates.delete(toolCtx.sessionID);
           if (value.action === "pause" || value.action === "blocked") {
-            await ctx.session.interrupt({ sessionID: toolCtx.sessionID }).catch(() => {
-              return;
-            });
+            await interruptSession(toolCtx.sessionID);
           }
           return { content: format(updated) };
         }
@@ -407,9 +420,7 @@ var plugin_default = Plugin.define({
         execute: async (_input, toolCtx) => {
           await controller.clear(toolCtx.sessionID);
           evidenceCandidates.delete(toolCtx.sessionID);
-          await ctx.session.interrupt({ sessionID: toolCtx.sessionID }).catch(() => {
-            return;
-          });
+          await interruptSession(toolCtx.sessionID);
           return { content: "Goal cleared." };
         }
       });

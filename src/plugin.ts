@@ -63,6 +63,20 @@ export default Plugin.define({
     let stopped = false
     let eventIterator: AsyncIterator<unknown> | undefined
 
+    const isSubagentSession = async (sessionID: string): Promise<boolean> => {
+      try {
+        const session = await ctx.session.get({ sessionID })
+        return typeof session.parentID === "string" && session.parentID.length > 0
+      } catch {
+        return false
+      }
+    }
+
+    const interruptSession = async (sessionID: string): Promise<void> => {
+      if (await isSubagentSession(sessionID)) return
+      await ctx.session.interrupt({ sessionID }).catch(() => undefined)
+    }
+
     await ctx.tool.transform((tools) => {
       tools.add({
         name: "get_goal",
@@ -127,7 +141,7 @@ export default Plugin.define({
           const updated = await controller.update(toolCtx.sessionID, value.action, value)
           if (value.action === "complete") evidenceCandidates.delete(toolCtx.sessionID)
           if (value.action === "pause" || value.action === "blocked") {
-            await ctx.session.interrupt({ sessionID: toolCtx.sessionID }).catch(() => undefined)
+            await interruptSession(toolCtx.sessionID)
           }
           return { content: format(updated) }
         },
@@ -140,7 +154,7 @@ export default Plugin.define({
         execute: async (_input, toolCtx) => {
           await controller.clear(toolCtx.sessionID)
           evidenceCandidates.delete(toolCtx.sessionID)
-          await ctx.session.interrupt({ sessionID: toolCtx.sessionID }).catch(() => undefined)
+          await interruptSession(toolCtx.sessionID)
           return { content: "Goal cleared." }
         },
       })
