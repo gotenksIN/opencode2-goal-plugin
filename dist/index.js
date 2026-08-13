@@ -6,6 +6,9 @@ import { homedir } from "os";
 import { join } from "path";
 import { Plugin } from "@opencode-ai/plugin";
 
+// src/types.ts
+var evidenceSources = ["tool", "test", "verification"];
+
 // src/controller.ts
 var defaultLimits = {
   maxContinuations: 12,
@@ -25,26 +28,29 @@ function history(goal, action, detail) {
   goal.history = goal.history.slice(-100);
 }
 function validateEvidence(value) {
-  if (!value || typeof value !== "object")
+  if (value === null || value instanceof Object === false) {
     throw new Error("Completion requires structured evidence");
-  const item = value;
-  if (!["tool", "test", "verification"].includes(item.source)) {
+  }
+  if (!evidenceSources.includes(value.source)) {
     throw new Error("Evidence source must be tool, test, or verification");
   }
-  if (item.success !== true)
+  if (value.success !== true)
     throw new Error("Evidence must report success: true");
-  if (typeof item.summary !== "string" || item.summary.trim().length < 3) {
+  let summary;
+  try {
+    summary = value.summary.trim();
+  } catch {
     throw new Error("Evidence requires a useful summary");
   }
-  if (item.toolCallID !== undefined && typeof item.toolCallID !== "string") {
+  if (summary.length < 3)
+    throw new Error("Evidence requires a useful summary");
+  if (value.toolCallID !== undefined && String(value.toolCallID) !== value.toolCallID) {
     throw new Error("Evidence toolCallID must be a string");
   }
-  return {
-    source: item.source,
-    summary: item.summary.trim(),
-    success: true,
-    ...item.toolCallID ? { toolCallID: item.toolCallID } : {}
-  };
+  const evidence = { source: value.source, summary, success: true };
+  if (value.toolCallID)
+    evidence.toolCallID = value.toolCallID;
+  return evidence;
 }
 function parseGoalCommand(input) {
   const text = input.trim();
@@ -65,13 +71,13 @@ function parseGoalCommand(input) {
     return { action, blocker: detail };
   }
   if (action === "complete") {
-    let parsed;
+    let evidence;
     try {
-      parsed = JSON.parse(detail);
+      evidence = JSON.parse(detail);
     } catch {
       throw new Error("Completion evidence must be JSON");
     }
-    return { action, evidence: validateEvidence(parsed) };
+    return { action, evidence: validateEvidence(evidence) };
   }
   return { action: "create", objective: text };
 }
@@ -224,12 +230,12 @@ class GoalStore {
   async readUnlocked() {
     try {
       const value = JSON.parse(await readFile(this.path, "utf8"));
-      if (value.version !== 1 || !value.goals || typeof value.goals !== "object") {
+      if (value.version !== 1 || !value.goals || value.goals instanceof Object === false) {
         throw new Error("Unsupported goal database format");
       }
       return value;
     } catch (error) {
-      if (error.code === "ENOENT")
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
         return emptyDatabase();
       throw error;
     }
@@ -301,15 +307,15 @@ function formatGoalStatus(goal, evidenceCandidates) {
     evidenceInstruction: evidenceCandidates.length ? "To complete the goal, copy one exact evidence candidate ID into evidence.toolCallID. Do not invent an ID." : "Run a successful non-goal verification tool, then call get_goal again to get its exact evidence candidate ID."
   }, null, 2);
 }
-function estimateTokens(value) {
+function estimateTokens(messages) {
   try {
-    return Math.ceil(JSON.stringify(value).length / 4);
+    return Math.ceil(JSON.stringify(messages).length / 4);
   } catch {
     return 0;
   }
 }
 function finiteNonNegative(value, fallback) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 function positiveInteger(value, fallback) {
   return Math.max(1, Math.floor(finiteNonNegative(value, fallback)));
@@ -330,11 +336,11 @@ var plugin_default = Plugin.define({
     const evidenceCandidates = new Map;
     const timers = new Set;
     let stopped = false;
-    let eventIterator;
+    let stopStream;
     const isSubagentSession = async (sessionID) => {
       try {
         const session = await ctx.session.get({ sessionID });
-        return typeof session.parentID === "string" && session.parentID.length > 0;
+        return session.parentID !== undefined && session.parentID.length > 0;
       } catch {
         return false;
       }
@@ -398,8 +404,8 @@ var plugin_default = Plugin.define({
         execute: async (input, toolCtx) => {
           const value = input;
           if (value.action === "complete") {
-            const evidence = value.evidence;
-            if (typeof evidence?.toolCallID !== "string" || !evidenceCandidates.get(toolCtx.sessionID)?.includes(evidence.toolCallID)) {
+            const toolCallID = value.evidence?.toolCallID;
+            if (toolCallID === undefined || !evidenceCandidates.get(toolCtx.sessionID)?.includes(toolCallID)) {
               throw new Error("Completion evidence must reference an exact evidence candidate ID from get_goal for this session");
             }
           }
@@ -507,15 +513,18 @@ ${state}${evidenceContext}`,
     };
     if (options.autoContinue !== false) {
       const stream = await ctx.event.subscribe();
-      eventIterator = stream[Symbol.asyncIterator]();
+      const iterator = stream[Symbol.asyncIterator]();
+      stopStream = async () => {
+        await iterator.return?.();
+      };
       (async () => {
         try {
           while (!stopped) {
-            const item = await eventIterator.next();
+            const item = await iterator.next();
             if (item.done)
               break;
             const event = item.value;
-            if (event.type !== "session.idle" || !event.data?.sessionID)
+            if (event.type !== "session.idle" || !event.data.sessionID)
               continue;
             if (scheduled.has(event.data.sessionID) || inFlight.has(event.data.sessionID))
               continue;
@@ -542,7 +551,7 @@ ${state}${evidenceContext}`,
       timers.clear();
       scheduled.clear();
       evidenceCandidates.clear();
-      await eventIterator?.return?.();
+      await stopStream?.();
     };
   }
 });

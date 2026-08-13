@@ -2,11 +2,47 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { join } from "node:path"
 import plugin from "../index"
+import type { CreateGoalInput, UpdateGoalInput } from "../src/types"
+
+interface EmptyToolInput {}
+
+type ToolInput = EmptyToolInput | CreateGoalInput | UpdateGoalInput
+
+interface ToolContext {
+  sessionID: string
+}
 
 interface RegisteredTool {
   name: string
-  execute: (input: unknown, context: { sessionID: string }) => Promise<{ content: string }>
+  execute: (input: ToolInput, context: ToolContext) => Promise<{ content: string }>
 }
+
+interface HarnessCommand {
+  name: string
+  template: string
+  description?: string
+}
+
+interface HarnessSession {
+  id: string
+  parentID?: string
+}
+
+interface HarnessContextEvent {
+  sessionID: string
+  messages: Array<object>
+  system: Array<{ type: string; text: string }>
+}
+
+interface HarnessToolHookEvent {
+  status: "completed" | "error"
+  tool: string
+  sessionID: string
+  id: string
+}
+
+type ContextHook = (event: HarnessContextEvent) => Promise<void> | void
+type ToolHook = (event: HarnessToolHookEvent) => Promise<void> | void
 
 const root = join(import.meta.dir, ".plugin")
 afterEach(() => rm(root, { recursive: true, force: true }))
@@ -17,44 +53,44 @@ interface HarnessOptions {
 
 async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const tools: RegisteredTool[] = []
-  const commands = new Map<string, Record<string, unknown>>()
-  const sessionHooks = new Map<string, Function>()
-  const toolHooks = new Map<string, Function>()
+  const commands = new Map<string, HarnessCommand>()
+  const sessionHooks = new Map<string, ContextHook>()
+  const toolHooks = new Map<string, ToolHook>()
   const interrupts: string[] = []
   const ctx = {
     options: { autoContinue: false, dataFile: join(root, `${name}.json`) },
     tool: {
       transform: async (callback: Function) => callback({ add: (tool: RegisteredTool) => tools.push(tool) }),
-      hook: async (hookName: string, callback: Function) => { toolHooks.set(hookName, callback) },
+      hook: async (hookName: string, callback: ToolHook) => { toolHooks.set(hookName, callback) },
     },
     command: {
       transform: async (callback: Function) => callback({
-        update: (commandName: string, update: Function) => {
-          const command = { name: commandName, template: "" }
+        update: (commandName: string, update: (command: HarnessCommand) => void) => {
+          const command: HarnessCommand = { name: commandName, template: "" }
           update(command)
           commands.set(commandName, command)
         },
       }),
     },
     session: {
-      hook: async (hookName: string, callback: Function) => { sessionHooks.set(hookName, callback) },
+      hook: async (hookName: string, callback: ContextHook) => { sessionHooks.set(hookName, callback) },
       prompt: async () => ({}),
       get: async (input: { sessionID: string }) => {
-        return {
-          id: input.sessionID,
-          ...(options.childSessions?.has(input.sessionID) ? { parentID: "ses_parent" } : {}),
-        }
+        const session: HarnessSession = { id: input.sessionID }
+        if (options.childSessions?.has(input.sessionID)) session.parentID = "ses_parent"
+        return session
       },
       interrupt: async (input: { sessionID: string }) => { interrupts.push(input.sessionID) },
     },
     event: { subscribe: async () => ({ async *[Symbol.asyncIterator]() {} }) },
   }
+  // SAFETY: the harness stubs the option, tool, command, session, and event domains that setup consumes.
   const cleanup = await plugin.setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
   return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts }
 }
 
-async function recordSuccessfulTool(toolHooks: Map<string, Function>, sessionID: string, id: string) {
+async function recordSuccessfulTool(toolHooks: Map<string, ToolHook>, sessionID: string, id: string) {
   await toolHooks.get("execute.after")?.({ status: "completed", tool: "shell", sessionID, id })
 }
 
@@ -66,7 +102,7 @@ describe("plugin registration", () => {
     expect(harness.commands.get("goal")?.template).toContain("$ARGUMENTS")
     expect([...harness.sessionHooks.keys()]).toEqual(["context"])
     expect([...harness.toolHooks.keys()]).toEqual(["execute.after"])
-    expect(typeof harness.cleanup).toBe("function")
+    expect(harness.cleanup).toBeInstanceOf(Function)
     await harness.cleanup?.()
   })
 
@@ -94,7 +130,7 @@ describe("completion evidence candidates", () => {
     expect(result.content).toContain("verification-id")
     expect(result.content).toContain("copy one exact evidence candidate ID")
 
-    const event = { sessionID: "s", messages: [], system: [] as Array<{ text: string }> }
+    const event: HarnessContextEvent = { sessionID: "s", messages: [], system: [] }
     await harness.sessionHooks.get("context")?.(event)
     expect(event.system[0]?.text).toContain("verification-id")
     expect(event.system[0]?.text).toContain("copy one exact ID")

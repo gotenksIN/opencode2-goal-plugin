@@ -1,4 +1,5 @@
-import type { Evidence, Goal, GoalLimits, GoalStatus } from "./types"
+import type { EvidenceInput, Goal, GoalLimits, GoalStatus, GoalUpdateDetail } from "./types"
+import { evidenceSources } from "./types"
 import { GoalStore } from "./store"
 
 export const defaultLimits: GoalLimits = {
@@ -21,25 +22,27 @@ function history(goal: Goal, action: string, detail?: string): void {
   goal.history = goal.history.slice(-100)
 }
 
-export function validateEvidence(value: unknown): Omit<Evidence, "createdAt"> {
-  if (!value || typeof value !== "object") throw new Error("Completion requires structured evidence")
-  const item = value as Record<string, unknown>
-  if (!(["tool", "test", "verification"] as unknown[]).includes(item.source)) {
+export function validateEvidence(value: ReturnType<typeof JSON.parse>): EvidenceInput {
+  if (value === null || value instanceof Object === false) {
+    throw new Error("Completion requires structured evidence")
+  }
+  if (!evidenceSources.includes(value.source)) {
     throw new Error("Evidence source must be tool, test, or verification")
   }
-  if (item.success !== true) throw new Error("Evidence must report success: true")
-  if (typeof item.summary !== "string" || item.summary.trim().length < 3) {
+  if (value.success !== true) throw new Error("Evidence must report success: true")
+  let summary: string
+  try {
+    summary = value.summary.trim()
+  } catch {
     throw new Error("Evidence requires a useful summary")
   }
-  if (item.toolCallID !== undefined && typeof item.toolCallID !== "string") {
+  if (summary.length < 3) throw new Error("Evidence requires a useful summary")
+  if (value.toolCallID !== undefined && String(value.toolCallID) !== value.toolCallID) {
     throw new Error("Evidence toolCallID must be a string")
   }
-  return {
-    source: item.source as Evidence["source"],
-    summary: item.summary.trim(),
-    success: true,
-    ...(item.toolCallID ? { toolCallID: item.toolCallID } : {}),
-  }
+  const evidence: EvidenceInput = { source: value.source, summary, success: true }
+  if (value.toolCallID) evidence.toolCallID = value.toolCallID
+  return evidence
 }
 
 export type GoalCommand =
@@ -49,7 +52,7 @@ export type GoalCommand =
   | { action: "resume" }
   | { action: "clear" }
   | { action: "blocked"; blocker: string }
-  | { action: "complete"; evidence: Omit<Evidence, "createdAt"> }
+  | { action: "complete"; evidence: EvidenceInput }
 
 export function parseGoalCommand(input: string): GoalCommand {
   const text = input.trim()
@@ -66,9 +69,9 @@ export function parseGoalCommand(input: string): GoalCommand {
     return { action, blocker: detail }
   }
   if (action === "complete") {
-    let parsed: unknown
-    try { parsed = JSON.parse(detail) } catch { throw new Error("Completion evidence must be JSON") }
-    return { action, evidence: validateEvidence(parsed) }
+    let evidence: ReturnType<typeof JSON.parse>
+    try { evidence = JSON.parse(detail) } catch { throw new Error("Completion evidence must be JSON") }
+    return { action, evidence: validateEvidence(evidence) }
   }
   return { action: "create", objective: text }
 }
@@ -93,14 +96,14 @@ export class GoalController {
       }
       history(goal, "created", clean)
       return goal
-    }) as Promise<Goal>
+    })
   }
 
-  clear(sessionID: string): Promise<undefined> {
-    return this.store.update(sessionID, () => undefined) as Promise<undefined>
+  clear(sessionID: string): Promise<Goal | undefined> {
+    return this.store.update(sessionID, () => undefined)
   }
 
-  update(sessionID: string, status: "pause" | "resume" | "blocked" | "complete", detail?: { blocker?: string; evidence?: unknown }): Promise<Goal> {
+  update(sessionID: string, status: "pause" | "resume" | "blocked" | "complete", detail?: GoalUpdateDetail): Promise<Goal> {
     return this.store.update(sessionID, (goal) => {
       if (!goal) throw new Error("No goal exists for this session")
       if (goal.status === "complete") throw new Error("The goal is already complete")
@@ -131,7 +134,7 @@ export class GoalController {
       }
       history(goal, status, detail?.blocker)
       return goal
-    }) as Promise<Goal>
+    })
   }
 
   async handleCommand(sessionID: string, input: string): Promise<Goal | undefined> {

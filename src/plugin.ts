@@ -1,15 +1,16 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { Plugin } from "@opencode-ai/plugin"
+import type { PluginOptions } from "@opencode-ai/plugin"
 import { GoalController, defaultLimits } from "./controller"
 import { GoalStore } from "./store"
-import type { Goal, GoalOptions } from "./types"
+import type { CreateGoalInput, Goal, UpdateGoalInput } from "./types"
 
 const goalToolNames = new Set(["get_goal", "create_goal", "update_goal", "clear_goal"])
 const maxEvidenceCandidatesPerSession = 20
 const maxEvidenceCandidateSessions = 100
 
-function dataPath(options: GoalOptions): string {
+function dataPath(options: PluginOptions): string {
   if (options.dataFile) {
     return options.dataFile.startsWith("~/")
       ? join(homedir(), options.dataFile.slice(2))
@@ -33,22 +34,22 @@ function formatGoalStatus(goal: Goal | undefined, evidenceCandidates: string[]):
   }, null, 2)
 }
 
-function estimateTokens(value: unknown): number {
-  try { return Math.ceil(JSON.stringify(value).length / 4) } catch { return 0 }
+function estimateTokens(messages: ReadonlyArray<object>): number {
+  try { return Math.ceil(JSON.stringify(messages).length / 4) } catch { return 0 }
 }
 
-function finiteNonNegative(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback
+function finiteNonNegative(value: PluginOptions[string], fallback: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
-function positiveInteger(value: unknown, fallback: number): number {
+function positiveInteger(value: PluginOptions[string], fallback: number): number {
   return Math.max(1, Math.floor(finiteNonNegative(value, fallback)))
 }
 
 export default Plugin.define({
   id: "opencode.goal",
   setup: async (ctx) => {
-    const options = ctx.options as GoalOptions
+    const options = ctx.options
     const limits = {
       maxContinuations: positiveInteger(options.maxContinuations, defaultLimits.maxContinuations),
       maxTokens: finiteNonNegative(options.maxTokens, defaultLimits.maxTokens),
@@ -61,12 +62,12 @@ export default Plugin.define({
     const evidenceCandidates = new Map<string, string[]>()
     const timers = new Set<ReturnType<typeof setTimeout>>()
     let stopped = false
-    let eventIterator: AsyncIterator<unknown> | undefined
+    let stopStream: (() => Promise<void>) | undefined
 
     const isSubagentSession = async (sessionID: string): Promise<boolean> => {
       try {
         const session = await ctx.session.get({ sessionID })
-        return typeof session.parentID === "string" && session.parentID.length > 0
+        return session.parentID !== undefined && session.parentID.length > 0
       } catch {
         return false
       }
@@ -98,7 +99,8 @@ export default Plugin.define({
         },
         options: { codemode: false },
         execute: async (input, toolCtx) => {
-          const value = input as { objective: string }
+          // SAFETY: OpenCode decodes tool input against the create_goal schema, so objective is a non-empty string.
+          const value = input as CreateGoalInput
           return { content: format(await controller.create(toolCtx.sessionID, value.objective)) }
         },
       })
@@ -127,14 +129,11 @@ export default Plugin.define({
         },
         options: { codemode: false },
         execute: async (input, toolCtx) => {
-          const value = input as {
-            action: "pause" | "resume" | "blocked" | "complete"
-            blocker?: string
-            evidence?: unknown
-          }
+          // SAFETY: OpenCode decodes tool input against the update_goal schema, so action is a known literal and evidence matches the nested schema.
+          const value = input as UpdateGoalInput
           if (value.action === "complete") {
-            const evidence = value.evidence as { toolCallID?: unknown } | undefined
-            if (typeof evidence?.toolCallID !== "string" || !evidenceCandidates.get(toolCtx.sessionID)?.includes(evidence.toolCallID)) {
+            const toolCallID = value.evidence?.toolCallID
+            if (toolCallID === undefined || !evidenceCandidates.get(toolCtx.sessionID)?.includes(toolCallID)) {
               throw new Error("Completion evidence must reference an exact evidence candidate ID from get_goal for this session")
             }
           }
@@ -236,20 +235,21 @@ export default Plugin.define({
 
     if (options.autoContinue !== false) {
       const stream = await ctx.event.subscribe()
-      eventIterator = stream[Symbol.asyncIterator]()
+      const iterator = stream[Symbol.asyncIterator]()
+      stopStream = async () => { await iterator.return?.() }
       void (async () => {
         try {
           while (!stopped) {
-            const item = await eventIterator!.next()
+            const item = await iterator.next()
             if (item.done) break
-            const event = item.value as { type?: string; data?: { sessionID?: string } }
-            if (event.type !== "session.idle" || !event.data?.sessionID) continue
+            const event = item.value
+            if (event.type !== "session.idle" || !event.data.sessionID) continue
             if (scheduled.has(event.data.sessionID) || inFlight.has(event.data.sessionID)) continue
             scheduled.add(event.data.sessionID)
             const timer = setTimeout(() => {
               timers.delete(timer)
-              scheduled.delete(event.data!.sessionID!)
-              void continueGoal(event.data!.sessionID!).catch(() => undefined)
+              scheduled.delete(event.data.sessionID)
+              void continueGoal(event.data.sessionID).catch(() => undefined)
             }, Math.max(0, options.continuationIntervalMs ?? 1500))
             timers.add(timer)
           }
@@ -265,7 +265,7 @@ export default Plugin.define({
       timers.clear()
       scheduled.clear()
       evidenceCandidates.clear()
-      await eventIterator?.return?.()
+      await stopStream?.()
     }
   },
 })

@@ -14,13 +14,13 @@ export class GoalStore {
 
   private async readUnlocked(): Promise<GoalDatabase> {
     try {
-      const value = JSON.parse(await readFile(this.path, "utf8")) as GoalDatabase
-      if (value.version !== 1 || !value.goals || typeof value.goals !== "object") {
+      const value = JSON.parse(await readFile(this.path, "utf8"))
+      if (value.version !== 1 || !value.goals || value.goals instanceof Object === false) {
         throw new Error("Unsupported goal database format")
       }
       return value
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyDatabase()
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return emptyDatabase()
       throw error
     }
   }
@@ -52,6 +52,8 @@ export class GoalStore {
     return this.locked(async () => structuredClone((await this.readUnlocked()).goals))
   }
 
+  update(sessionID: string, mutate: (goal: Goal | undefined) => Goal): Promise<Goal>
+  update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined>
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined> {
     return this.locked(async () => {
       const database = await this.readUnlocked()
