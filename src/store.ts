@@ -48,10 +48,6 @@ export class GoalStore {
     return this.locked(async () => structuredClone((await this.readUnlocked()).goals[sessionID]))
   }
 
-  all(): Promise<Record<string, Goal>> {
-    return this.locked(async () => structuredClone((await this.readUnlocked()).goals))
-  }
-
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal): Promise<Goal>
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined>
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined> {
