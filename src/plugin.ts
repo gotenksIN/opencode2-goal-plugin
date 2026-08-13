@@ -20,10 +20,6 @@ function dataPath(options: PluginOptions): string {
   return join(root, "opencode-goal-plugin", "goals.json")
 }
 
-function format(goal: Goal | undefined): string {
-  return goal ? JSON.stringify(goal, null, 2) : "No goal exists for this session."
-}
-
 function formatGoalStatus(goal: Goal | undefined, evidenceCandidates: string[]): string {
   return JSON.stringify({
     goal: goal ?? null,
@@ -101,7 +97,7 @@ export default Plugin.define({
         execute: async (input, toolCtx) => {
           // SAFETY: OpenCode decodes tool input against the create_goal schema, so objective is a non-empty string.
           const value = input as CreateGoalInput
-          return { content: format(await controller.create(toolCtx.sessionID, value.objective)) }
+          return { content: JSON.stringify(await controller.create(toolCtx.sessionID, value.objective), null, 2) }
         },
       })
       tools.add({
@@ -142,7 +138,7 @@ export default Plugin.define({
           if (value.action === "pause" || value.action === "blocked") {
             await interruptSession(toolCtx.sessionID)
           }
-          return { content: format(updated) }
+          return { content: JSON.stringify(updated, null, 2) }
         },
       })
       tools.add({
