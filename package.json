@@ -4,7 +4,7 @@
   "description": "Persistent session goals for OpenCode V2",
   "type": "module",
   "exports": "./index.ts",
-  "files": ["index.ts", "src", "README.md", "AGENTS.md", "docs", "dist"],
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "dist"],
   "scripts": {
     "lint": "oxlint .",
     "test": "bun test",
