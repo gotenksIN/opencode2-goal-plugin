@@ -45,37 +45,6 @@ export function validateEvidence(value: ReturnType<typeof JSON.parse>): Evidence
   return evidence
 }
 
-export type GoalCommand =
-  | { action: "get" }
-  | { action: "create"; objective: string }
-  | { action: "pause" }
-  | { action: "resume" }
-  | { action: "clear" }
-  | { action: "blocked"; blocker: string }
-  | { action: "complete"; evidence: EvidenceInput }
-
-export function parseGoalCommand(input: string): GoalCommand {
-  const text = input.trim()
-  if (!text || text === "status" || text === "get") return { action: "get" }
-  const [action, ...rest] = text.split(/\s+/)
-  const detail = rest.join(" ").trim()
-  if (action === "create") {
-    if (!detail) throw new Error("Usage: /goal create <objective>")
-    return { action, objective: detail }
-  }
-  if (action === "pause" || action === "resume" || action === "clear") return { action }
-  if (action === "blocked") {
-    if (!detail) throw new Error("Usage: /goal blocked <blocker>")
-    return { action, blocker: detail }
-  }
-  if (action === "complete") {
-    let evidence: ReturnType<typeof JSON.parse>
-    try { evidence = JSON.parse(detail) } catch { throw new Error("Completion evidence must be JSON") }
-    return { action, evidence: validateEvidence(evidence) }
-  }
-  return { action: "create", objective: text }
-}
-
 export class GoalController {
   constructor(readonly store: GoalStore, readonly limits: GoalLimits = defaultLimits) {}
 
@@ -135,16 +104,6 @@ export class GoalController {
       history(goal, status, detail?.blocker)
       return goal
     })
-  }
-
-  async handleCommand(sessionID: string, input: string): Promise<Goal | undefined> {
-    const command = parseGoalCommand(input)
-    if (command.action === "get") return this.get(sessionID)
-    if (command.action === "create") return this.create(sessionID, command.objective)
-    if (command.action === "clear") return this.clear(sessionID)
-    if (command.action === "blocked") return this.update(sessionID, "blocked", command)
-    if (command.action === "complete") return this.update(sessionID, "complete", command)
-    return this.update(sessionID, command.action)
   }
 
   checkpoint(sessionID: string, summary: string, source: string, madeProgress = false): Promise<Goal | undefined> {

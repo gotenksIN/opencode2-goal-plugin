@@ -1,23 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { join } from "node:path"
-import { GoalController, parseGoalCommand, validateEvidence } from "../src/controller"
+import { GoalController, validateEvidence } from "../src/controller"
 import { GoalStore } from "../src/store"
 
 const root = join(import.meta.dir, ".controller")
 afterEach(() => rm(root, { recursive: true, force: true }))
 
-describe("command parsing and evidence", () => {
-  test("parses status, objective, and blocked commands", () => {
-    expect(parseGoalCommand("status")).toEqual({ action: "get" })
-    expect(parseGoalCommand("Ship feature")).toEqual({ action: "create", objective: "Ship feature" })
-    expect(parseGoalCommand("blocked Need access")).toEqual({ action: "blocked", blocker: "Need access" })
-  })
-
+describe("evidence validation", () => {
   test("accepts only structured successful evidence", () => {
     expect(validateEvidence({ source: "test", summary: "Tests passed", success: true }).success).toBe(true)
     expect(() => validateEvidence({ source: "test", summary: "Failed", success: false })).toThrow("success")
-    expect(() => parseGoalCommand("complete done in prose")).toThrow("JSON")
   })
 })
 
