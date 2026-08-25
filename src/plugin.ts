@@ -52,11 +52,14 @@ export default Plugin.define({
       maxDurationMs: finiteNonNegative(options.maxDurationMs, defaultLimits.maxDurationMs),
       noProgressTurns: positiveInteger(options.noProgressTurns, defaultLimits.noProgressTurns),
     }
-    const controller = new GoalController(new GoalStore(dataPath(options)), limits)
+    const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
     const scheduled = new Set<string>()
+    const continuationTasks = new Set<Promise<void>>()
+    const pendingContinuations = new Map<string, number>()
     const evidenceCandidates = new Map<string, string[]>()
     const timers = new Set<ReturnType<typeof setTimeout>>()
+    const continuationController = new AbortController()
     let stopped = false
     let stopStream: (() => Promise<void>) | undefined
 
@@ -116,7 +119,7 @@ export default Plugin.define({
                 success: { type: "boolean" },
                 toolCallID: { type: "string" },
               },
-              required: ["source", "summary", "success"],
+              required: ["source", "summary", "success", "toolCallID"],
               additionalProperties: false,
             },
           },
@@ -136,6 +139,7 @@ export default Plugin.define({
           const updated = await controller.update(toolCtx.sessionID, value.action, value)
           if (value.action === "complete") evidenceCandidates.delete(toolCtx.sessionID)
           if (value.action === "pause" || value.action === "blocked") {
+            pendingContinuations.delete(toolCtx.sessionID)
             await interruptSession(toolCtx.sessionID)
           }
           return { content: JSON.stringify(updated, null, 2) }
@@ -149,6 +153,7 @@ export default Plugin.define({
         execute: async (_input, toolCtx) => {
           await controller.clear(toolCtx.sessionID)
           evidenceCandidates.delete(toolCtx.sessionID)
+          pendingContinuations.delete(toolCtx.sessionID)
           await interruptSession(toolCtx.sessionID)
           return { content: "Goal cleared." }
         },
@@ -156,42 +161,57 @@ export default Plugin.define({
     })
 
     await ctx.command.transform((commands) => {
-      commands.update("goal", (command) => {
-        command.description = "Create, inspect, pause, resume, block, complete, or clear a session goal"
-        command.template = [
-          "Route this goal command through the matching goal controller tools.",
-          "Arguments: $ARGUMENTS",
-          "With no arguments or with 'status', call get_goal.",
-          "A plain objective or 'create OBJECTIVE' calls create_goal.",
-          "pause, resume, and blocked BLOCKER call update_goal.",
-          "For complete, call get_goal if needed, then copy an exact evidence candidate ID into structured evidence for update_goal.",
-          "clear calls clear_goal.",
-          "For complete, require a JSON evidence object with source, summary, and success=true.",
-          "Never infer completion from prose and never claim a state change without the tool result.",
-        ].join("\n")
+      commands.add({
+        name: "goal",
+        description: "Create, inspect, pause, resume, block, complete, or clear a session goal",
+        execute: async ({ sessionID, prompt, delivery }) => {
+          const instructions = [
+            "Route this goal command through the matching goal controller tools.",
+            `Arguments: ${prompt.text}`,
+            "With no arguments or with 'status', call get_goal.",
+            "A plain objective or 'create OBJECTIVE' calls create_goal.",
+            "pause, resume, and blocked BLOCKER call update_goal.",
+            "For complete, call get_goal if needed, then copy an exact evidence candidate ID into structured evidence for update_goal.",
+            "clear calls clear_goal.",
+            "For complete, require a JSON evidence object with source, summary, and success=true.",
+            "Never infer completion from prose and never claim a state change without the tool result.",
+          ].join("\n")
+
+          await ctx.session.prompt({
+            files: prompt.files?.map((file) => ({ uri: file.uri, name: file.name, description: file.description })),
+            agents: prompt.agents?.map((agent) => ({ name: agent.name })),
+            skills: prompt.skills?.map((skill) => ({ id: skill.id })),
+            sessionID,
+            text: instructions,
+            delivery,
+          })
+        },
       })
     })
 
     await ctx.session.hook("context", async (event) => {
       const goal = await controller.get(event.sessionID)
       if (!goal) return
-      await controller.account(event.sessionID, estimateTokens(event.messages))
-      const state = goal.status === "active"
+      const accounted = await controller.account(event.sessionID, estimateTokens(event.messages))
+      if (!accounted) return
+      const state = accounted.status === "active"
         ? "Continue work toward this goal. Use goal tools for every state change. Complete only with successful structured evidence."
-        : `Do not silently continue this goal because its state is ${goal.status}.`
+        : `Do not silently continue this goal because its state is ${accounted.status}.`
       const candidates = evidenceCandidates.get(event.sessionID) ?? []
       const evidenceContext = candidates.length
         ? `\nRecent valid evidence candidate IDs: ${JSON.stringify(candidates)}\nFor completion, copy one exact ID into evidence.toolCallID. Do not invent an ID.`
         : "\nNo evidence candidate is available. Run a successful non-goal verification tool, then call get_goal."
       event.system.push({
         type: "text",
-        text: `[Persisted goal]\nObjective: ${goal.objective}\nStatus: ${goal.status}${goal.blocker ? `\nBlocker: ${goal.blocker}` : ""}\n${state}${evidenceContext}`,
+        text: `[Persisted goal]\nObjective: ${accounted.objective}\nStatus: ${accounted.status}${accounted.blocker ? `\nBlocker: ${accounted.blocker}` : ""}\n${state}${evidenceContext}`,
         metadata: { plugin: "opencode.goal" },
       })
     })
 
     await ctx.tool.hook("execute.after", async (event) => {
       if (stopped || event.status !== "completed" || goalToolNames.has(event.tool)) return
+      const goal = await controller.get(event.sessionID)
+      if (!goal || goal.status !== "active") return
       const recent = evidenceCandidates.get(event.sessionID) ?? []
       const next = [...recent.filter((id) => id !== event.id), event.id].slice(-maxEvidenceCandidatesPerSession)
       evidenceCandidates.delete(event.sessionID)
@@ -211,41 +231,52 @@ export default Plugin.define({
       try {
         const goal = await controller.get(sessionID)
         if (!goal || goal.status !== "active") return
-        const before = goal.checkpoints.length
-        await controller.account(sessionID, 0, true, false)
-        const checked = await controller.get(sessionID)
-        if (!checked || checked.status !== "active") return
+        const before = goal.progressCount ?? 0
         await ctx.session.prompt({
           sessionID,
           text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
-          metadata: { plugin: "opencode.goal", continuation: checked.continuationCount },
-        })
-        const after = await controller.get(sessionID)
-        if (after && after.checkpoints.length > before) {
-          await controller.account(sessionID, 0, false, true)
-        }
+          metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
+        }, { signal: continuationController.signal })
+        if (!stopped) pendingContinuations.set(sessionID, before)
       } finally {
         inFlight.delete(sessionID)
       }
     }
 
+    const settleContinuation = async (sessionID: string): Promise<void> => {
+      const before = pendingContinuations.get(sessionID)
+      if (before === undefined) return
+      pendingContinuations.delete(sessionID)
+      const goal = await controller.get(sessionID)
+      await controller.account(sessionID, 0, true, Boolean(goal && (goal.progressCount ?? 0) > before))
+    }
+
     if (options.autoContinue !== false) {
-      const stream = await ctx.event.subscribe()
+      const streamController = new AbortController()
+      const stream = ctx.event.subscribe({ signal: streamController.signal })
       const iterator = stream[Symbol.asyncIterator]()
-      stopStream = async () => { await iterator.return?.() }
-      void (async () => {
+      const streamTask = (async () => {
         try {
           while (!stopped) {
             const item = await iterator.next()
             if (item.done) break
             const event = item.value
-            if (event.type !== "session.idle" || !event.data.sessionID) continue
-            if (scheduled.has(event.data.sessionID) || inFlight.has(event.data.sessionID)) continue
-            scheduled.add(event.data.sessionID)
+            let sessionID: string | undefined
+            if (event.type === "session.idle") {
+              sessionID = event.data.sessionID
+            } else if (event.type === "session.status" && event.data.status.type === "idle") {
+              sessionID = event.data.sessionID
+            }
+            if (!sessionID) continue
+            await settleContinuation(sessionID)
+            if (scheduled.has(sessionID) || inFlight.has(sessionID)) continue
+            scheduled.add(sessionID)
             const timer = setTimeout(() => {
               timers.delete(timer)
-              scheduled.delete(event.data.sessionID)
-              void continueGoal(event.data.sessionID).catch(() => undefined)
+              scheduled.delete(sessionID)
+              const task = continueGoal(sessionID).catch(() => undefined)
+              continuationTasks.add(task)
+              void task.finally(() => continuationTasks.delete(task))
             }, Math.max(0, options.continuationIntervalMs ?? 1500))
             timers.add(timer)
           }
@@ -253,15 +284,23 @@ export default Plugin.define({
           if (!stopped) return
         }
       })()
+      stopStream = async () => {
+        streamController.abort()
+        await iterator.return?.()
+        await streamTask
+      }
     }
 
     return async () => {
       stopped = true
+      continuationController.abort()
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
       scheduled.clear()
       evidenceCandidates.clear()
       await stopStream?.()
+      await Promise.all(continuationTasks)
+      pendingContinuations.clear()
     }
   },
 })

@@ -17,15 +17,34 @@ interface RegisteredTool {
   execute: (input: ToolInput, context: ToolContext) => Promise<{ content: string }>
 }
 
+interface HarnessCommandInvocation {
+  sessionID: string
+  prompt: {
+    text: string
+    files?: Array<{ uri: string; mention?: { start: number; end: number; text: string } }>
+  }
+  delivery: "steer" | "queue"
+}
+
 interface HarnessCommand {
   name: string
-  template: string
   description?: string
+  execute: (input: HarnessCommandInvocation) => Promise<void>
 }
 
 interface HarnessSession {
   id: string
   parentID?: string
+}
+
+type MetadataScalar = string | number | boolean
+
+interface HarnessPromptInput {
+  text: string
+  sessionID: string
+  delivery?: "steer" | "queue"
+  metadata?: Record<string, MetadataScalar>
+  files?: Array<{ uri: string; mention?: { start: number; end: number; text: string } }>
 }
 
 interface HarnessContextEvent {
@@ -47,8 +66,19 @@ type ToolHook = (event: HarnessToolHookEvent) => Promise<void> | void
 const root = join(import.meta.dir, ".plugin")
 afterEach(() => rm(root, { recursive: true, force: true }))
 
+type HarnessEvent =
+  | { type: "session.idle"; data: { sessionID: string } }
+  | { type: "session.status"; data: { sessionID: string; status: { type: string } } }
+
 interface HarnessOptions {
   childSessions?: Set<string>
+  autoContinue?: boolean
+  continuationIntervalMs?: number
+  maxContinuations?: number
+  maxTokens?: number
+  noProgressTurns?: number
+  promptGate?: Promise<void>
+  events?: AsyncIterable<HarnessEvent>
 }
 
 async function setupPlugin(name: string, options: HarnessOptions = {}) {
@@ -57,24 +87,34 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const sessionHooks = new Map<string, ContextHook>()
   const toolHooks = new Map<string, ToolHook>()
   const interrupts: string[] = []
+  const prompts: HarnessPromptInput[] = []
   const ctx = {
-    options: { autoContinue: false, dataFile: join(root, `${name}.json`) },
+    options: {
+      autoContinue: options.autoContinue ?? false,
+      continuationIntervalMs: options.continuationIntervalMs,
+      maxContinuations: options.maxContinuations,
+      maxTokens: options.maxTokens,
+      noProgressTurns: options.noProgressTurns,
+      dataFile: join(root, `${name}.json`),
+    },
     tool: {
       transform: async (callback: Function) => callback({ add: (tool: RegisteredTool) => tools.push(tool) }),
       hook: async (hookName: string, callback: ToolHook) => { toolHooks.set(hookName, callback) },
     },
     command: {
       transform: async (callback: Function) => callback({
-        update: (commandName: string, update: (command: HarnessCommand) => void) => {
-          const command: HarnessCommand = { name: commandName, template: "" }
-          update(command)
-          commands.set(commandName, command)
+        add: (command: HarnessCommand) => {
+          commands.set(command.name, command)
         },
       }),
     },
     session: {
       hook: async (hookName: string, callback: ContextHook) => { sessionHooks.set(hookName, callback) },
-      prompt: async () => ({}),
+      prompt: async (input: HarnessPromptInput) => {
+        prompts.push(input)
+        await options.promptGate
+        return {}
+      },
       get: async (input: { sessionID: string }) => {
         const session: HarnessSession = { id: input.sessionID }
         if (options.childSessions?.has(input.sessionID)) session.parentID = "ses_parent"
@@ -82,38 +122,53 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
       },
       interrupt: async (input: { sessionID: string }) => { interrupts.push(input.sessionID) },
     },
-    event: { subscribe: async () => ({ async *[Symbol.asyncIterator]() {} }) },
+    event: {
+      subscribe: () =>
+        options.events ?? {
+          async *[Symbol.asyncIterator]() {},
+        },
+    },
   }
   // SAFETY: the harness stubs the option, tool, command, session, and event domains that setup consumes.
   const cleanup = await plugin.setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
-  return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts }
+  return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts, prompts }
 }
 
 async function recordSuccessfulTool(toolHooks: Map<string, ToolHook>, sessionID: string, id: string) {
   await toolHooks.get("execute.after")?.({ status: "completed", tool: "shell", sessionID, id })
 }
 
-describe("plugin registration", () => {
-  test("registers one command, exactly four tools, and runtime hooks", async () => {
-    const harness = await setupPlugin("registration")
-    expect(plugin.id).toBe("opencode.goal")
-    expect(harness.tools.map((tool) => tool.name)).toEqual(["get_goal", "create_goal", "update_goal", "clear_goal"])
-    expect(harness.commands.get("goal")?.template).toContain("$ARGUMENTS")
-    expect([...harness.sessionHooks.keys()]).toEqual(["context"])
-    expect([...harness.toolHooks.keys()]).toEqual(["execute.after"])
-    expect(harness.cleanup).toBeInstanceOf(Function)
+describe("goal command", () => {
+  test("executes goal command by dispatching prompt to session", async () => {
+    const harness = await setupPlugin("command-exec")
+    const goalCmd = harness.commands.get("goal")
+    expect(goalCmd).toBeDefined()
+    await goalCmd?.execute({
+      sessionID: "s-123",
+      prompt: {
+        text: "create Finish the feature @plan.md",
+        files: [{ uri: "file:///plan.md", mention: { start: 26, end: 34, text: "@plan.md" } }],
+      },
+      delivery: "queue",
+    })
+    expect(harness.prompts).toHaveLength(1)
+    expect(harness.prompts[0]?.sessionID).toBe("s-123")
+    expect(harness.prompts[0]?.text).toContain("Arguments: create Finish the feature @plan.md")
+    expect(harness.prompts[0]?.delivery).toBe("queue")
+    expect(harness.prompts[0]?.files).toEqual([{ uri: "file:///plan.md" }])
     await harness.cleanup?.()
   })
-
 })
 
 describe("completion evidence candidates", () => {
   test("records only successful non-goal tool call IDs", async () => {
     const harness = await setupPlugin("recording")
     const after = harness.toolHooks.get("execute.after")!
+    await after({ status: "completed", tool: "shell", sessionID: "s", id: "pre-goal-id" })
     await after({ status: "error", tool: "shell", sessionID: "s", id: "failed-id" })
     await after({ status: "completed", tool: "get_goal", sessionID: "s", id: "goal-id" })
+    await harness.tool("create_goal").execute({ objective: "Record evidence" }, { sessionID: "s" })
     await recordSuccessfulTool(harness.toolHooks, "s", "real-id")
 
     const result = await harness.tool("get_goal").execute({}, { sessionID: "s" })
@@ -203,6 +258,140 @@ describe("subagent session interrupts", () => {
     await harness.tool("create_goal").execute({ objective: "Top level" }, { sessionID: "top" })
     await harness.tool("clear_goal").execute({}, { sessionID: "top" })
     expect(harness.interrupts).toEqual(["top"])
+    await harness.cleanup?.()
+  })
+})
+
+describe("auto continuation", () => {
+  test("sends the configured maximum number of continuation prompts", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.status", data: { sessionID: "s-limited", status: { type: "idle" } } }
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      yield { type: "session.status", data: { sessionID: "s-limited", status: { type: "idle" } } }
+    }
+    const harness = await setupPlugin("auto-limit", {
+      autoContinue: true,
+      continuationIntervalMs: 10,
+      maxContinuations: 1,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "One continuation" }, { sessionID: "s-limited" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(harness.prompts.filter((prompt) => prompt.sessionID === "s-limited")).toHaveLength(1)
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-limited" })
+    expect(JSON.parse(result.content).goal.status).toBe("budgetLimited")
+    await harness.cleanup?.()
+  })
+
+  test("accounts progress when the continued turn becomes idle", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.idle", data: { sessionID: "s-progress" } }
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      yield { type: "session.idle", data: { sessionID: "s-progress" } }
+    }
+    const harness = await setupPlugin("auto-progress", {
+      autoContinue: true,
+      continuationIntervalMs: 20,
+      noProgressTurns: 1,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "Make progress" }, { sessionID: "s-progress" })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await harness.toolHooks.get("execute.after")?.({
+      status: "completed",
+      tool: "patch",
+      sessionID: "s-progress",
+      id: "patch-id",
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-progress" })
+    expect(JSON.parse(result.content).goal.status).toBe("active")
+    expect(JSON.parse(result.content).goal.noProgressCount).toBe(0)
+    await harness.cleanup?.()
+  })
+
+  test("sends continuation prompt on session.status idle event", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.status", data: { sessionID: "s-auto", status: { type: "idle" } } }
+    }
+    const harness = await setupPlugin("auto-status", {
+      autoContinue: true,
+      continuationIntervalMs: 10,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "Auto task" }, { sessionID: "s-auto" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(harness.prompts.some((p) => p.sessionID === "s-auto" && p.text.includes("Continue the persisted goal"))).toBe(true)
+    await harness.cleanup?.()
+  })
+
+  test("sends continuation prompt on legacy session.idle event", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.idle", data: { sessionID: "s-idle" } }
+    }
+    const harness = await setupPlugin("auto-idle", {
+      autoContinue: true,
+      continuationIntervalMs: 10,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "Idle task" }, { sessionID: "s-idle" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(harness.prompts.some((p) => p.sessionID === "s-idle" && p.text.includes("Continue the persisted goal"))).toBe(true)
+    await harness.cleanup?.()
+  })
+
+  test("cancels scheduled continuation during cleanup", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.idle", data: { sessionID: "s-cleanup" } }
+    }
+    const harness = await setupPlugin("auto-cleanup", {
+      autoContinue: true,
+      continuationIntervalMs: 100,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "Do not continue" }, { sessionID: "s-cleanup" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await harness.cleanup?.()
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(harness.prompts).toEqual([])
+  })
+
+  test("waits for an in-flight continuation during cleanup", async () => {
+    let releasePrompt: () => void = () => {}
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      yield { type: "session.idle", data: { sessionID: "s-in-flight" } }
+    }
+    const harness = await setupPlugin("auto-in-flight", {
+      autoContinue: true,
+      continuationIntervalMs: 0,
+      promptGate,
+      events: eventGenerator(),
+    })
+    await harness.tool("create_goal").execute({ objective: "Finish prompt" }, { sessionID: "s-in-flight" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    let cleaned = false
+    const cleanup = Promise.resolve(harness.cleanup?.()).then(() => { cleaned = true })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(cleaned).toBe(false)
+    releasePrompt()
+    await cleanup
+    expect(cleaned).toBe(true)
+  })
+})
+
+describe("goal context", () => {
+  test("reports a limit reached while accounting for the current context", async () => {
+    const harness = await setupPlugin("context-limit", { maxTokens: 0 })
+    await harness.tool("create_goal").execute({ objective: "Bound token use" }, { sessionID: "s" })
+    const event: HarnessContextEvent = { sessionID: "s", messages: [], system: [] }
+    await harness.sessionHooks.get("context")?.(event)
+
+    expect(event.system[0]?.text).toContain("Status: usageLimited")
+    expect(event.system[0]?.text).toContain("Do not silently continue")
     await harness.cleanup?.()
   })
 })
