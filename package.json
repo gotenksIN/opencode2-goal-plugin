@@ -16,9 +16,9 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^0.0.0-dev-18153",
-    "@oxlint/plugins": "1.78.0",
+    "@oxlint/plugins": "1.80.0",
     "@types/bun": "latest",
-    "oxlint": "1.78.0",
+    "oxlint": "1.80.0",
     "typescript": "latest"
   },
   "engines": {
