@@ -1,12 +1,12 @@
-# OpenCode Goal Plugin
+# Goal plugin for OpenCode
 
-This OpenCode V2 plugin stores and tracks one persistent goal for each session.
-It provides the `/goal` command, four goal tools, evidence-gated completion, progress checkpoints, and automatic continuation with limits.
-It does not add a terminal user interface (TUI) indicator.
+This plugin stores and tracks one persistent goal for each OpenCode session.
+It provides the `/goal` command, four goal management tools, verification-gated completion, progress checkpoints, and automatic session continuation.
+It does not add a terminal user interface indicator.
 
 ## Installation
 
-Add the plugin package to your OpenCode V2 configuration file.
+Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration file.
 
 ```jsonc
 {
@@ -28,48 +28,91 @@ Add the plugin package to your OpenCode V2 configuration file.
 }
 ```
 
+### Configuration options
+
+You can configure the following options:
+
+- `autoContinue`: Enables automatic continuation when the session becomes idle. Defaults to `true`.
+- `maxContinuations`: Sets the maximum number of automatic continuation turns. Defaults to `12`.
+- `continuationIntervalMs`: Sets the delay in milliseconds before an automatic continuation prompt. Defaults to `1500`.
+- `maxDurationMs`: Sets the maximum active execution time in milliseconds before setting status to `budgetLimited`. Defaults to `3600000` (1 hour).
+- `maxTokens`: Sets the maximum estimated context token count before setting status to `usageLimited`. Defaults to `120000`.
+- `noProgressTurns`: Sets the maximum consecutive continuation turns without file edits before pausing the goal. Defaults to `3`.
+- `dataFile`: Specifies a custom file path for the goal database. Defaults to `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
+
 ## Commands
 
-Use the `/goal` command to manage session goals:
+Use the `/goal` command in chat to manage session goals.
 
-- `/goal Build and verify the feature`: Creates a new session goal with the given objective.
-- `/goal status`: Returns the current goal status.
+- `/goal`: Shows the active goal status and evidence candidate IDs.
+- `/goal status`: Shows the active goal status and evidence candidate IDs.
+- `/goal <objective>`: Creates a goal with the specified objective.
+- `/goal create <objective>`: Creates a goal with the specified objective.
 - `/goal pause`: Pauses automatic continuation for the active goal.
 - `/goal resume`: Resumes execution for a paused or blocked goal.
-- `/goal blocked <reason>`: Sets the goal status to blocked and records the reason.
-- `/goal complete {"source":"test","summary":"All tests passed","success":true,"toolCallID":"..."}`: Completes the goal using structured evidence.
-- `/goal clear`: Deletes the session goal.
+- `/goal blocked <reason>`: Marks the goal as blocked and records the reason.
+- `/goal complete <evidence>`: Completes the goal using structured evidence JSON.
+- `/goal clear`: Removes the goal for the session.
 
-The plugin registers the `/goal` command through the OpenCode V2 command transform API.
-Its command callback preserves the invocation delivery mode and sends routing instructions to the active session.
-Those instructions route operations through `get_goal`, `create_goal`, `update_goal`, or `clear_goal`.
+The plugin registers the `/goal` command through the OpenCode command transform API.
+The command callback preserves invocation delivery modes (`steer` or `queue`) and context mentions (`@files`, `@agents`, `@skills`).
+It provides instructions that guide the session agent to call the matching goal tool.
 Only goal tools modify the stored goal state.
 
-## Completion Evidence Workflow
+## Tools interface
 
-Completion uses the exact OpenCode tool call ID from a successful non-goal tool in the same session.
+The plugin registers four tools for agent use:
 
-1. Run a verification tool, such as a test or build command, and confirm that it succeeds.
-2. Call `get_goal` if you need the ID.
-3. Copy an exact ID from the returned `evidenceCandidates` list.
-4. Call `update_goal` with `action: "complete"` and put that ID in `evidence.toolCallID`.
+- `get_goal`: Returns the stored goal, its status, active duration, token estimate, checkpoints, history, and valid evidence candidate IDs.
+- `create_goal`: Creates a goal for the session with an `objective` string.
+- `update_goal`: Updates goal status with an `action` of `pause`, `resume`, `blocked`, or `complete`.
+- `clear_goal`: Deletes the session goal and cancels pending continuations.
 
-Do not use a command name, a descriptive label such as `bun-publish-dry-run`, or an ID from another session.
-The plugin rejects any value that is not a recent successful evidence candidate for the current session.
+## Evidence workflow and verification
 
-## Persistence and Limits
+The plugin requires verified tool execution before goal completion.
+The assistant cannot complete a goal through prose claims alone.
 
-The plugin stores goal data in an atomic JSON file at `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
-It uses process queue locking for safe concurrent file writes.
-It sets plugin-owned directory permissions to `0700` and file permissions to `0600` on supported operating systems.
-It preserves the permissions of an existing custom data-file directory.
-Each goal record contains execution history, checkpoints, timestamps, active duration, continuation counts, and a token estimate.
-The plugin estimates token usage by dividing the length of serialized context messages by four.
-OpenCode V2 does not provide exact token count metrics to plugins.
-Goal completion requires evidence that references a recent successful tool call recorded during the same session.
+1. Execute a verification tool, such as a test command or build command.
+2. Confirm that the command succeeds.
+3. Call `get_goal` to retrieve recorded evidence candidate IDs.
+4. Call `update_goal` with `action: "complete"` and structured evidence.
 
-The `session.idle` event and idle `session.status` event trigger automatic goal continuation.
-The plugin verifies persisted goal state before each continuation prompt.
-It prevents concurrent continuation tasks for the same session.
-It stops continuation when execution reaches configured limits for continuations, active time, token estimates, or turns without progress.
-You can disable automatic continuation by setting `autoContinue: false` in the plugin options.
+The evidence object must contain the following fields:
+
+- `source`: Set to `"tool"`, `"test"`, or `"verification"`.
+- `summary`: Provide a descriptive summary of at least 3 characters.
+- `success`: Set to `true`.
+- `toolCallID`: Provide the exact tool call ID from `get_goal`.
+
+```json
+{
+  "action": "complete",
+  "evidence": {
+    "source": "test",
+    "summary": "All test suites passed successfully",
+    "success": true,
+    "toolCallID": "call_123456789"
+  }
+}
+```
+
+The plugin rejects completion if `toolCallID` does not match a successful tool call from the same session.
+
+## Persistence and limits
+
+The plugin stores goal records in a single JSON file.
+It resolves the database path from the `dataFile` option or uses `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
+The store uses atomic file replacement and cross-process file locking.
+It applies permissions of `0700` for created directories and `0600` for files on supported systems.
+Existing custom directories retain their original permissions.
+
+Each goal record contains timestamps, active duration, continuation counts, checkpoints, history entries, and approximate token estimates.
+The plugin estimates token usage from serialized context messages divided by four.
+
+The plugin triggers automatic continuation when a session becomes idle.
+It checks limits before and during continuation:
+
+- Reaching `maxTokens` sets goal status to `usageLimited`.
+- Reaching `maxDurationMs` or `maxContinuations` sets goal status to `budgetLimited`.
+- Reaching `noProgressTurns` without file changes sets goal status to `paused`.

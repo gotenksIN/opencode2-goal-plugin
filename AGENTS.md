@@ -1,19 +1,34 @@
-# Project Instructions
+# Agent instructions
 
 ## Tooling
 
-- Use Bun to install dependencies, run tests, check types, and build the project.
-- Do not use `npm`, `npx`, or `bunx`.
-- Maintain compatibility with the OpenCode V2 API.
+Use Bun for all repository operations.
+Do not use `npm`, `npx`, or `bunx`.
 
-## Code Standards
+- `bun test`: Run the test suite.
+- `bun run typecheck`: Run TypeScript type checking.
+- `bun run build`: Build the ESM distribution bundle.
+- `bun run lint`: Run code linter checks.
 
-- Write code in TypeScript using ECMAScript Modules (ESM).
-- Keep state transitions in the goal controller class (`src/controller.ts`).
-- Ensure file persistence is atomic with owner-only file permissions where supported.
-- Do not accept assistant prose text as goal completion evidence.
-- Mark token accounting as approximate.
+Always maintain compatibility with the OpenCode V2 plugin API.
 
-## Verification
+## Code standards
 
-- Run `bun test`, `bun run typecheck`, and `bun run build` after you make code changes.
+- Write source code in TypeScript with ECMAScript Modules (ESM).
+- Encapsulate all goal state transitions in `GoalController` (`src/controller.ts`).
+- Restrict `GoalStore` (`src/store.ts`) to file persistence, atomic writes, and lock management.
+- Ensure file persistence is atomic using unique temporary files, hard-link locking, and atomic rename operations.
+- Apply owner-only permissions (`0o700` for created directories, `0o600` for files) on supported platforms.
+- Treat token accounting as approximate.
+- Calculate token estimates using the serialized message length heuristic (`JSON.stringify(messages).length / 4`).
+- Validate completion evidence strictly.
+- Reject plain assistant prose, unverified assertions, and cross-session tool IDs.
+
+## Test contracts
+
+- Test public and executable interfaces of `GoalController`, `GoalStore`, and plugin hooks.
+- Assert state transitions, limit triggers, error conditions, and filesystem side effects.
+- Verify persistence invariants: atomic replacement, directory permission preservation, lock contention, and stale lock handling.
+- Verify completion validation: evidence schemas, candidate ID matching, and session isolation.
+- Do not write tests that only verify the presence of symbol names, command registrations, or type definitions.
+- Let the TypeScript compiler enforce static type relationships.
