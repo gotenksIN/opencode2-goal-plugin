@@ -1,4 +1,5 @@
 node_modules/
+dist/
 test/.data/
 test/.controller/
 test/.plugin/
