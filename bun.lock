@@ -4,14 +4,15 @@
   "workspaces": {
     "": {
       "name": "opencode-goal-plugin",
-      "dependencies": {
-        "@opencode-ai/plugin": "^0.0.0-dev-18153",
-      },
       "devDependencies": {
+        "@opencode-ai/plugin": "^0.0.0-dev-18153",
         "@oxlint/plugins": "1.78.0",
         "@types/bun": "latest",
         "oxlint": "1.78.0",
         "typescript": "latest",
+      },
+      "peerDependencies": {
+        "@opencode-ai/plugin": ">=0.0.0-dev-18153",
       },
     },
   },
