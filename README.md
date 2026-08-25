@@ -13,7 +13,7 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode2-goal-plugin@1.0.4",
+      "package": "opencode2-goal-plugin@1.0.5",
       "options": {
         "autoContinue": true,
         "maxContinuations": 12,
