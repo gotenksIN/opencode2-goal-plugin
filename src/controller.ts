@@ -22,7 +22,7 @@ function history(goal: Goal, action: string, detail?: string): void {
   goal.history = goal.history.slice(-100)
 }
 
-export function validateEvidence(value: ReturnType<typeof JSON.parse>): EvidenceInput {
+function validateEvidence(value: ReturnType<typeof JSON.parse>): EvidenceInput {
   if (value === null || value instanceof Object === false) {
     throw new Error("Completion requires structured evidence")
   }
@@ -37,12 +37,10 @@ export function validateEvidence(value: ReturnType<typeof JSON.parse>): Evidence
     throw new Error("Evidence requires a useful summary")
   }
   if (summary.length < 3) throw new Error("Evidence requires a useful summary")
-  if (value.toolCallID !== undefined && String(value.toolCallID) !== value.toolCallID) {
-    throw new Error("Evidence toolCallID must be a string")
+  if (value.toolCallID === undefined || String(value.toolCallID) !== value.toolCallID || value.toolCallID.length === 0) {
+    throw new Error("Evidence requires a tool call ID")
   }
-  const evidence: EvidenceInput = { source: value.source, summary, success: true }
-  if (value.toolCallID) evidence.toolCallID = value.toolCallID
-  return evidence
+  return { source: value.source, summary, success: true, toolCallID: value.toolCallID }
 }
 
 export class GoalController {
@@ -61,7 +59,7 @@ export class GoalController {
       const goal: Goal = {
         sessionID, objective: clean, status: "active", evidence: [], checkpoints: [], history: [],
         createdAt: at, updatedAt: at, activeSince: at, activeTimeMs: 0,
-        continuationCount: 0, tokenEstimate: 0, noProgressCount: 0,
+        continuationCount: 0, tokenEstimate: 0, noProgressCount: 0, progressCount: 0,
       }
       history(goal, "created", clean)
       return goal
@@ -112,7 +110,10 @@ export class GoalController {
       goal.updatedAt = now()
       goal.checkpoints.push({ at: goal.updatedAt, summary, source })
       goal.checkpoints = goal.checkpoints.slice(-50)
-      if (madeProgress) goal.noProgressCount = 0
+      if (madeProgress) {
+        goal.noProgressCount = 0
+        goal.progressCount = (goal.progressCount ?? 0) + 1
+      }
       history(goal, "checkpoint", summary)
       return goal
     })

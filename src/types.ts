@@ -1,13 +1,10 @@
-export const goalStatuses = [
-  "active",
-  "paused",
-  "blocked",
-  "usageLimited",
-  "budgetLimited",
-  "complete",
-] as const
-
-export type GoalStatus = (typeof goalStatuses)[number]
+export type GoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete"
 
 export const evidenceSources = ["tool", "test", "verification"] as const
 
@@ -71,6 +68,7 @@ export interface Goal {
   continuationCount: number
   tokenEstimate: number
   noProgressCount: number
+  progressCount?: number
 }
 
 export interface GoalDatabase {
@@ -83,10 +81,4 @@ export interface GoalLimits {
   maxTokens: number
   maxDurationMs: number
   noProgressTurns: number
-}
-
-export interface GoalOptions extends Partial<GoalLimits> {
-  autoContinue?: boolean
-  continuationIntervalMs?: number
-  dataFile?: string
 }
