@@ -409,10 +409,9 @@ The package manifest and build must follow strict rules to maintain compatibilit
 
 ### Dependency declaration
 
-- Declare `@opencode-ai/plugin` under `dependencies`.
-- Pin exact pre-release versions (such as `"0.0.0-dev-18153"` or `"beta"`).
-- Do not use loose semver caret ranges like `"^0.0.0-dev-18153"`. Loose ranges cause npm to resolve incompatible v1 releases (`1.18.x`) that lack root `Plugin` exports.
-- Do not mark `@opencode-ai/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
+- Declare `@opencode/plugin` under `dependencies`.
+- Pin exact versions (such as `"2.0.2"`).
+- Do not mark `@opencode/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
 
 ### Tool schema provider compatibility
 
@@ -431,6 +430,6 @@ The package manifest and build must follow strict rules to maintain compatibilit
     "./source": "./index.ts"
   }
   ```
-- Build the standalone ESM bundle with `bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin`.
+- Build the standalone ESM bundle with `bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin`.
 - Restrict `"files"` in `package.json` to `["dist", "index.ts", "src"]`.
 - Package managers automatically bundle `package.json`, `README.md`, and `LICENSE`. Internal agent specifications (`AGENTS.md`, `CONTEXT.md`) and tests remain excluded from the registry tarball.
