@@ -13,7 +13,8 @@
     "lint": "oxlint .",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin"
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.2"
