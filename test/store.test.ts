@@ -5,6 +5,7 @@ import { GoalController } from "../src/controller"
 import { GoalStore } from "../src/store"
 
 const root = join(import.meta.dir, ".data")
+
 afterEach(() => rm(root, { recursive: true, force: true }))
 
 describe("GoalStore", () => {
@@ -18,6 +19,7 @@ describe("GoalStore", () => {
     expect((await controller.get("a"))?.objective).toBe("First objective")
     expect((await controller.get("b"))?.objective).toBe("Second objective")
     expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([])
+
     if (process.platform !== "win32") {
       expect((await stat(root)).mode & 0o777).toBe(0o700)
       expect((await stat(path)).mode & 0o777).toBe(0o600)

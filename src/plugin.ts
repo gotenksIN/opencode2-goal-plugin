@@ -7,7 +7,9 @@ import { GoalStore } from "./store"
 import type { CreateGoalInput, Goal, UpdateGoalInput } from "./types"
 
 const goalToolNames = new Set(["get_goal", "create_goal", "update_goal", "clear_goal"])
+
 const maxEvidenceCandidatesPerSession = 20
+
 const maxEvidenceCandidateSessions = 100
 
 function dataPath(options: PluginOptions): string {
@@ -16,7 +18,9 @@ function dataPath(options: PluginOptions): string {
       ? join(homedir(), options.dataFile.slice(2))
       : options.dataFile
   }
+
   const root = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share")
+
   return join(root, "opencode-goal-plugin", "goals.json")
 }
 
@@ -46,12 +50,14 @@ export default Plugin.define({
   id: "opencode.goal",
   setup: async (ctx) => {
     const options = ctx.options
+
     const limits = {
       maxContinuations: positiveInteger(options.maxContinuations, defaultLimits.maxContinuations),
       maxTokens: finiteNonNegative(options.maxTokens, defaultLimits.maxTokens),
       maxDurationMs: finiteNonNegative(options.maxDurationMs, defaultLimits.maxDurationMs),
       noProgressTurns: positiveInteger(options.noProgressTurns, defaultLimits.noProgressTurns),
     }
+
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
     const scheduled = new Set<string>()
@@ -66,6 +72,7 @@ export default Plugin.define({
     const isSubagentSession = async (sessionID: string): Promise<boolean> => {
       try {
         const session = await ctx.session.get({ sessionID })
+
         return session.parentID !== undefined && session.parentID.length > 0
       } catch {
         return false
@@ -100,6 +107,7 @@ export default Plugin.define({
         execute: async (input, toolCtx) => {
           // SAFETY: OpenCode decodes tool input against the create_goal schema, so objective is a non-empty string.
           const value = input as CreateGoalInput
+
           return { content: JSON.stringify(await controller.create(toolCtx.sessionID, value.objective), null, 2) }
         },
       })
@@ -130,18 +138,24 @@ export default Plugin.define({
         execute: async (input, toolCtx) => {
           // SAFETY: OpenCode decodes tool input against the update_goal schema, so action is a known literal and evidence matches the nested schema.
           const value = input as UpdateGoalInput
+
           if (value.action === "complete") {
             const toolCallID = value.evidence?.toolCallID
+
             if (toolCallID === undefined || !evidenceCandidates.get(toolCtx.sessionID)?.includes(toolCallID)) {
               throw new Error("Completion evidence must reference an exact evidence candidate ID from get_goal for this session")
             }
           }
+
           const updated = await controller.update(toolCtx.sessionID, value.action, value)
+
           if (value.action === "complete") evidenceCandidates.delete(toolCtx.sessionID)
+
           if (value.action === "pause" || value.action === "blocked") {
             pendingContinuations.delete(toolCtx.sessionID)
             await interruptSession(toolCtx.sessionID)
           }
+
           return { content: JSON.stringify(updated, null, 2) }
         },
       })
@@ -155,6 +169,7 @@ export default Plugin.define({
           evidenceCandidates.delete(toolCtx.sessionID)
           pendingContinuations.delete(toolCtx.sessionID)
           await interruptSession(toolCtx.sessionID)
+
           return { content: "Goal cleared." }
         },
       })
@@ -191,16 +206,22 @@ export default Plugin.define({
 
     await ctx.session.hook("context", async (event) => {
       const goal = await controller.get(event.sessionID)
+
       if (!goal) return
       const accounted = await controller.account(event.sessionID, estimateTokens(event.messages))
+
       if (!accounted) return
+
       const state = accounted.status === "active"
         ? "Continue work toward this goal. Use goal tools for every state change. Complete only with successful structured evidence."
         : `Do not silently continue this goal because its state is ${accounted.status}.`
+
       const candidates = evidenceCandidates.get(event.sessionID) ?? []
+
       const evidenceContext = candidates.length
         ? `\nRecent valid evidence candidate IDs: ${JSON.stringify(candidates)}\nFor completion, copy one exact ID into evidence.toolCallID. Do not invent an ID.`
         : "\nNo evidence candidate is available. Run a successful non-goal verification tool, then call get_goal."
+
       event.system.push({
         type: "text",
         text: `[Persisted goal]\nObjective: ${accounted.objective}\nStatus: ${accounted.status}${accounted.blocker ? `\nBlocker: ${accounted.blocker}` : ""}\n${state}${evidenceContext}`,
@@ -211,16 +232,20 @@ export default Plugin.define({
     await ctx.tool.hook("execute.after", async (event) => {
       if (stopped || event.status !== "completed" || goalToolNames.has(event.tool)) return
       const goal = await controller.get(event.sessionID)
+
       if (!goal || goal.status !== "active") return
       const recent = evidenceCandidates.get(event.sessionID) ?? []
       const next = [...recent.filter((id) => id !== event.id), event.id].slice(-maxEvidenceCandidatesPerSession)
       evidenceCandidates.delete(event.sessionID)
       evidenceCandidates.set(event.sessionID, next)
+
       while (evidenceCandidates.size > maxEvidenceCandidateSessions) {
         const oldestSession = evidenceCandidates.keys().next().value
+
         if (oldestSession === undefined) break
         evidenceCandidates.delete(oldestSession)
       }
+
       const meaningful = new Set(["edit", "write", "patch"])
       await controller.checkpoint(event.sessionID, `Successful ${event.tool} tool call`, event.tool, meaningful.has(event.tool))
     })
@@ -228,8 +253,10 @@ export default Plugin.define({
     const continueGoal = async (sessionID: string) => {
       if (stopped || inFlight.has(sessionID)) return
       inFlight.add(sessionID)
+
       try {
         const goal = await controller.get(sessionID)
+
         if (!goal || goal.status !== "active") return
         const before = goal.progressCount ?? 0
         await ctx.session.prompt({
@@ -237,6 +264,7 @@ export default Plugin.define({
           text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
           metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
         }, { signal: continuationController.signal })
+
         if (!stopped) pendingContinuations.set(sessionID, before)
       } finally {
         inFlight.delete(sessionID)
@@ -245,6 +273,7 @@ export default Plugin.define({
 
     const settleContinuation = async (sessionID: string): Promise<void> => {
       const before = pendingContinuations.get(sessionID)
+
       if (before === undefined) return
       pendingContinuations.delete(sessionID)
       const goal = await controller.get(sessionID)
@@ -255,22 +284,28 @@ export default Plugin.define({
       const streamController = new AbortController()
       const stream = ctx.event.subscribe({ signal: streamController.signal })
       const iterator = stream[Symbol.asyncIterator]()
+
       const streamTask = (async () => {
         try {
           while (!stopped) {
             const item = await iterator.next()
+
             if (item.done) break
             const event = item.value
             let sessionID: string | undefined
+
             if (event.type === "session.idle") {
               sessionID = event.data.sessionID
             } else if (event.type === "session.status" && event.data.status.type === "idle") {
               sessionID = event.data.sessionID
             }
+
             if (!sessionID) continue
             await settleContinuation(sessionID)
+
             if (scheduled.has(sessionID) || inFlight.has(sessionID)) continue
             scheduled.add(sessionID)
+
             const timer = setTimeout(() => {
               timers.delete(timer)
               scheduled.delete(sessionID)
@@ -278,12 +313,14 @@ export default Plugin.define({
               continuationTasks.add(task)
               void task.finally(() => continuationTasks.delete(task))
             }, Math.max(0, options.continuationIntervalMs ?? 1500))
+
             timers.add(timer)
           }
         } catch {
           if (!stopped) return
         }
       })()
+
       stopStream = async () => {
         streamController.abort()
         await iterator.return?.()
@@ -294,6 +331,7 @@ export default Plugin.define({
     return async () => {
       stopped = true
       continuationController.abort()
+
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
       scheduled.clear()

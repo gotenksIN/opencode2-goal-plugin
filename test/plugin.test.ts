@@ -61,9 +61,11 @@ interface HarnessToolHookEvent {
 }
 
 type ContextHook = (event: HarnessContextEvent) => Promise<void> | void
+
 type ToolHook = (event: HarnessToolHookEvent) => Promise<void> | void
 
 const root = join(import.meta.dir, ".plugin")
+
 afterEach(() => rm(root, { recursive: true, force: true }))
 
 type HarnessEvent =
@@ -88,6 +90,7 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const toolHooks = new Map<string, ToolHook>()
   const interrupts: string[] = []
   const prompts: HarnessPromptInput[] = []
+
   const ctx = {
     options: {
       autoContinue: options.autoContinue ?? false,
@@ -113,11 +116,14 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
       prompt: async (input: HarnessPromptInput) => {
         prompts.push(input)
         await options.promptGate
+
         return {}
       },
       get: async (input: { sessionID: string }) => {
         const session: HarnessSession = { id: input.sessionID }
+
         if (options.childSessions?.has(input.sessionID)) session.parentID = "ses_parent"
+
         return session
       },
       interrupt: async (input: { sessionID: string }) => { interrupts.push(input.sessionID) },
@@ -129,9 +135,11 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
         },
     },
   }
+
   // SAFETY: the harness stubs the option, tool, command, session, and event domains that setup consumes.
   const cleanup = await plugin.setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
+
   return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts, prompts }
 }
 
@@ -201,6 +209,7 @@ describe("completion evidence candidates", () => {
       action: "complete",
       evidence: { source: "test", summary: "Bun tests passed", success: true, toolCallID: "test-call-id" },
     }, { sessionID: "s" })
+
     expect(JSON.parse(result.content).status).toBe("complete")
     await harness.cleanup?.()
   })
@@ -269,12 +278,14 @@ describe("auto continuation", () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       yield { type: "session.status", data: { sessionID: "s-limited", status: { type: "idle" } } }
     }
+
     const harness = await setupPlugin("auto-limit", {
       autoContinue: true,
       continuationIntervalMs: 10,
       maxContinuations: 1,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "One continuation" }, { sessionID: "s-limited" })
     await new Promise((resolve) => setTimeout(resolve, 50))
 
@@ -290,12 +301,14 @@ describe("auto continuation", () => {
       await new Promise((resolve) => setTimeout(resolve, 60))
       yield { type: "session.idle", data: { sessionID: "s-progress" } }
     }
+
     const harness = await setupPlugin("auto-progress", {
       autoContinue: true,
       continuationIntervalMs: 20,
       noProgressTurns: 1,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "Make progress" }, { sessionID: "s-progress" })
     await new Promise((resolve) => setTimeout(resolve, 40))
     await harness.toolHooks.get("execute.after")?.({
@@ -316,11 +329,13 @@ describe("auto continuation", () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       yield { type: "session.status", data: { sessionID: "s-auto", status: { type: "idle" } } }
     }
+
     const harness = await setupPlugin("auto-status", {
       autoContinue: true,
       continuationIntervalMs: 10,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "Auto task" }, { sessionID: "s-auto" })
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(harness.prompts.some((p) => p.sessionID === "s-auto" && p.text.includes("Continue the persisted goal"))).toBe(true)
@@ -331,11 +346,13 @@ describe("auto continuation", () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       yield { type: "session.idle", data: { sessionID: "s-idle" } }
     }
+
     const harness = await setupPlugin("auto-idle", {
       autoContinue: true,
       continuationIntervalMs: 10,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "Idle task" }, { sessionID: "s-idle" })
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(harness.prompts.some((p) => p.sessionID === "s-idle" && p.text.includes("Continue the persisted goal"))).toBe(true)
@@ -346,11 +363,13 @@ describe("auto continuation", () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       yield { type: "session.idle", data: { sessionID: "s-cleanup" } }
     }
+
     const harness = await setupPlugin("auto-cleanup", {
       autoContinue: true,
       continuationIntervalMs: 100,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "Do not continue" }, { sessionID: "s-cleanup" })
     await new Promise((resolve) => setTimeout(resolve, 20))
     await harness.cleanup?.()
@@ -360,16 +379,20 @@ describe("auto continuation", () => {
 
   test("waits for an in-flight continuation during cleanup", async () => {
     let releasePrompt: () => void = () => {}
+
     const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       yield { type: "session.idle", data: { sessionID: "s-in-flight" } }
     }
+
     const harness = await setupPlugin("auto-in-flight", {
       autoContinue: true,
       continuationIntervalMs: 0,
       promptGate,
       events: eventGenerator(),
     })
+
     await harness.tool("create_goal").execute({ objective: "Finish prompt" }, { sessionID: "s-in-flight" })
     await new Promise((resolve) => setTimeout(resolve, 20))
 

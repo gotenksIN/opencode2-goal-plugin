@@ -5,6 +5,7 @@ import { GoalController } from "../src/controller"
 import { GoalStore } from "../src/store"
 
 const root = join(import.meta.dir, ".controller")
+
 afterEach(() => rm(root, { recursive: true, force: true }))
 
 describe("goal lifecycle", () => {
@@ -20,9 +21,11 @@ describe("goal lifecycle", () => {
     await expect(controller.update("s", "complete", { evidence: proseEvidence })).rejects.toThrow("structured evidence")
     await expect(controller.update("s", "complete", { evidence: { source: "test", summary: "Suite passed", success: false } })).rejects.toThrow()
     await expect(controller.update("s", "complete", { evidence: { source: "test", summary: "Suite passed", success: true } })).rejects.toThrow("tool call ID")
+
     const complete = await controller.update("s", "complete", {
       evidence: { source: "test", summary: "Suite passed", success: true, toolCallID: "call-1" },
     })
+
     expect(complete.status).toBe("complete")
     expect(complete.evidence).toHaveLength(1)
     expect(complete.history.map((entry) => entry.action)).toContain("complete")
@@ -32,6 +35,7 @@ describe("goal lifecycle", () => {
     const controller = new GoalController(new GoalStore(join(root, "limits.json")), {
       maxContinuations: 2, maxTokens: 100, maxDurationMs: 100_000, noProgressTurns: 5,
     })
+
     await controller.create("s", "Bounded work")
     await controller.account("s", 1, true)
     const limited = await controller.account("s", 1, true)
@@ -42,9 +46,11 @@ describe("goal lifecycle", () => {
   test("tracks meaningful progress after old checkpoints are capped", async () => {
     const controller = new GoalController(new GoalStore(join(root, "progress.json")))
     await controller.create("s", "Long task")
+
     for (let index = 0; index < 51; index++) {
       await controller.checkpoint("s", `Read ${index}`, "read")
     }
+
     const progressed = await controller.checkpoint("s", "Changed code", "patch", true)
 
     expect(progressed?.checkpoints).toHaveLength(50)
