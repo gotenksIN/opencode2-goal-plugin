@@ -495,6 +495,36 @@ describe("auto continuation", () => {
     await harness.cleanup?.()
   })
 
+  test("reschedules when execution succeeds before prompt admission returns", async () => {
+    let releasePrompt: () => void = () => {}
+
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-fast" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-fast" } }
+    }
+
+    const harness = await setupPlugin("fast-execution", {
+      autoContinue: true,
+      continuationIntervalMs: 0,
+      events: eventGenerator(),
+      promptGate,
+    })
+
+    await harness.tool("create_goal").execute({ objective: "Keep continuing" }, { sessionID: "s-fast" })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    releasePrompt()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(harness.prompts.filter((prompt) => prompt.sessionID === "s-fast")).toHaveLength(2)
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-fast" })
+    expect(JSON.parse(result.content).goal.continuationCount).toBe(1)
+    await harness.cleanup?.()
+  })
+
   test("pauses after interrupted execution without auto-continuation enabled", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       await new Promise((resolve) => setTimeout(resolve, 10))

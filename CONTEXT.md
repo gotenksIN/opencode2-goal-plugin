@@ -379,6 +379,7 @@ The plugin automatically prompts the session agent after successful execution:
   - Call `controller.account(sessionID, 0, true, madeProgress)` to advance counters and evaluate no-progress limits.
 - Debounce and concurrency guard:
   - Skip scheduling if a continuation is already scheduled or in-flight for `sessionID`.
+  - Defer scheduling until prompt admission returns when execution succeeds during admission.
   - Schedule continuation with `setTimeout` using `continuationIntervalMs` (default `1500ms`).
   - Track each active timer by session in `scheduled`.
 - Prompt dispatch:
@@ -396,7 +397,7 @@ The plugin automatically prompts the session agent after successful execution:
   - Clear all timers and candidate maps.
   - Abort the event stream iterator.
   - Do not wait for unresolved prompt admission because the Promise plugin adapter cannot cancel it.
-  - Recheck goal state, ownership, and teardown state before an admitted prompt adds pending continuation state.
+  - Invalidate in-flight admission before terminal cancellation can pause the goal.
 
 ## Command transform
 

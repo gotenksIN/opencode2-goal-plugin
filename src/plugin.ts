@@ -83,6 +83,8 @@ export default Plugin.define({
 
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
+    const admissionTokens = new Map<string, symbol>()
+    const rescheduleAfterAdmission = new Set<string>()
     const scheduled = new Map<string, ReturnType<typeof setTimeout>>()
     const pendingContinuations = new Map<string, number>()
     const evidenceCandidates = new Map<string, string[]>()
@@ -317,7 +319,10 @@ export default Plugin.define({
 
     const continueGoal = async (sessionID: string) => {
       if (stopped || inFlight.has(sessionID)) return
+      const admissionToken = Symbol(sessionID)
+
       inFlight.add(sessionID)
+      admissionTokens.set(sessionID, admissionToken)
 
       try {
         if (!(await ownsSession(sessionID))) return
@@ -327,22 +332,24 @@ export default Plugin.define({
         const before = goal.progressCount ?? 0
         const stillOwned = await ownsSession(sessionID)
 
-        if (stopped || !stillOwned) return
-        await ctx.session.prompt({
-          sessionID,
-          text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
-          metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
-        })
+        if (stopped || !stillOwned || admissionTokens.get(sessionID) !== admissionToken) return
+        pendingContinuations.set(sessionID, before)
 
-        if (stopped) return
-        const admittedGoal = await controller.get(sessionID)
-
-        if (stopped || admittedGoal?.status !== "active") return
-        const stillOwnsSession = await ownsSession(sessionID)
-
-        if (!stopped && stillOwnsSession) pendingContinuations.set(sessionID, before)
+        try {
+          await ctx.session.prompt({
+            sessionID,
+            text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
+            metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
+          })
+        } catch (error) {
+          if (admissionTokens.get(sessionID) === admissionToken) pendingContinuations.delete(sessionID)
+          throw error
+        }
       } finally {
+        if (admissionTokens.get(sessionID) === admissionToken) admissionTokens.delete(sessionID)
         inFlight.delete(sessionID)
+
+        if (rescheduleAfterAdmission.delete(sessionID)) await scheduleContinuation(sessionID)
       }
     }
 
@@ -357,11 +364,36 @@ export default Plugin.define({
     }
 
     const cancelContinuation = (sessionID: string): void => {
+      admissionTokens.delete(sessionID)
+      rescheduleAfterAdmission.delete(sessionID)
       pendingContinuations.delete(sessionID)
       const timer = scheduled.get(sessionID)
 
       if (timer !== undefined) clearTimeout(timer)
       scheduled.delete(sessionID)
+    }
+
+    const scheduleContinuation = async (sessionID: string): Promise<void> => {
+      if (
+        stopped
+        || options.autoContinue === false
+        || scheduled.has(sessionID)
+        || inFlight.has(sessionID)
+      ) return
+
+      const goal = await controller.get(sessionID)
+
+      if (!goal || goal.status !== "active") return
+      const owned = await ownsSession(sessionID)
+
+      if (stopped || !owned || scheduled.has(sessionID) || inFlight.has(sessionID)) return
+
+      const timer = setTimeout(() => {
+        scheduled.delete(sessionID)
+        void continueGoal(sessionID).catch(() => undefined)
+      }, Math.max(0, options.continuationIntervalMs ?? 1500))
+
+      scheduled.set(sessionID, timer)
     }
 
     const streamController = new AbortController()
@@ -394,19 +426,12 @@ export default Plugin.define({
           const sessionID = event.data.sessionID
           await settleContinuation(sessionID)
 
-          if (
-            options.autoContinue === false
-            || scheduled.has(sessionID)
-            || inFlight.has(sessionID)
-            || !(await ownsSession(sessionID))
-          ) continue
+          if (inFlight.has(sessionID)) {
+            rescheduleAfterAdmission.add(sessionID)
+            continue
+          }
 
-          const timer = setTimeout(() => {
-            scheduled.delete(sessionID)
-            void continueGoal(sessionID).catch(() => undefined)
-          }, Math.max(0, options.continuationIntervalMs ?? 1500))
-
-          scheduled.set(sessionID, timer)
+          await scheduleContinuation(sessionID)
         }
       } catch {
         if (!stopped) return
@@ -424,6 +449,8 @@ export default Plugin.define({
 
       for (const timer of scheduled.values()) clearTimeout(timer)
       scheduled.clear()
+      admissionTokens.clear()
+      rescheduleAfterAdmission.clear()
       evidenceCandidates.clear()
       rejectedEvidenceCandidates.clear()
       await stopStream?.()
