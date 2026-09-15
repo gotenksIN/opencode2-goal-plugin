@@ -92,6 +92,18 @@ export default Plugin.define({
     let stopped = false
     let stopStream: (() => Promise<void>) | undefined
 
+    const ownsSession = async (sessionID: string): Promise<boolean> => {
+      try {
+        const session = await ctx.session.get({ sessionID })
+
+        return session.projectID === ctx.location.project.id
+          && session.location.directory === ctx.location.directory
+          && session.location.workspaceID === ctx.location.workspaceID
+      } catch {
+        return false
+      }
+    }
+
     const isSubagentSession = async (sessionID: string): Promise<boolean> => {
       try {
         const session = await ctx.session.get({ sessionID })
@@ -310,10 +322,14 @@ export default Plugin.define({
       inFlight.add(sessionID)
 
       try {
+        if (!(await ownsSession(sessionID))) return
         const goal = await controller.get(sessionID)
 
         if (!goal || goal.status !== "active") return
         const before = goal.progressCount ?? 0
+        const stillOwned = await ownsSession(sessionID)
+
+        if (stopped || !stillOwned) return
         await ctx.session.prompt({
           sessionID,
           text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
@@ -327,6 +343,7 @@ export default Plugin.define({
     }
 
     const settleContinuation = async (sessionID: string): Promise<void> => {
+      if (!(await ownsSession(sessionID))) return
       const before = pendingContinuations.get(sessionID)
 
       if (before === undefined) return
@@ -357,6 +374,8 @@ export default Plugin.define({
 
           if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
             const sessionID = event.data.sessionID
+
+            if (!(await ownsSession(sessionID))) continue
             cancelContinuation(sessionID)
             const detail = event.type === "session.execution.failed" ? event.data.error.message : event.data.reason
             await controller.pauseAfterExecution(
@@ -371,7 +390,12 @@ export default Plugin.define({
           const sessionID = event.data.sessionID
           await settleContinuation(sessionID)
 
-          if (options.autoContinue === false || scheduled.has(sessionID) || inFlight.has(sessionID)) continue
+          if (
+            options.autoContinue === false
+            || scheduled.has(sessionID)
+            || inFlight.has(sessionID)
+            || !(await ownsSession(sessionID))
+          ) continue
 
           const timer = setTimeout(() => {
             scheduled.delete(sessionID)

@@ -35,6 +35,8 @@ interface HarnessCommand {
 interface HarnessSession {
   id: string
   parentID?: string
+  projectID: string
+  location: { directory: string; workspaceID?: string }
 }
 
 type MetadataScalar = string | number | boolean
@@ -77,6 +79,8 @@ type HarnessEvent =
 
 interface HarnessOptions {
   childSessions?: Set<string>
+  foreignLocationSessions?: Set<string>
+  foreignProjectSessions?: Set<string>
   autoContinue?: boolean
   continuationIntervalMs?: number
   maxContinuations?: number
@@ -95,6 +99,11 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const prompts: HarnessPromptInput[] = []
 
   const ctx = {
+    location: {
+      directory: "/workspace/project",
+      workspaceID: "workspace",
+      project: { id: "project", directory: "/workspace/project", canonical: "/workspace/project" },
+    },
     options: {
       autoContinue: options.autoContinue ?? false,
       continuationIntervalMs: options.continuationIntervalMs,
@@ -123,7 +132,16 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
         return {}
       },
       get: async (input: { sessionID: string }) => {
-        const session: HarnessSession = { id: input.sessionID }
+        const session: HarnessSession = {
+          id: input.sessionID,
+          projectID: options.foreignProjectSessions?.has(input.sessionID) ? "foreign-project" : "project",
+          location: {
+            directory: options.foreignLocationSessions?.has(input.sessionID)
+              ? "/workspace/foreign"
+              : "/workspace/project",
+            workspaceID: "workspace",
+          },
+        }
 
         if (options.childSessions?.has(input.sessionID)) session.parentID = "ses_parent"
 
@@ -455,6 +473,57 @@ describe("auto continuation", () => {
       action: "execution-interrupted",
       detail: "user",
     })
+    await harness.cleanup?.()
+  })
+
+  test("ignores execution events for sessions owned by another plugin location", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "foreign-location" } }
+      yield {
+        type: "session.execution.failed",
+        data: { sessionID: "foreign-project", error: { type: "ProviderError", message: "failed" } },
+      }
+    }
+
+    const harness = await setupPlugin("foreign-events", {
+      autoContinue: true,
+      continuationIntervalMs: 0,
+      events: eventGenerator(),
+      foreignLocationSessions: new Set(["foreign-location"]),
+      foreignProjectSessions: new Set(["foreign-project"]),
+    })
+
+    await harness.tool("create_goal").execute({ objective: "Stay local" }, { sessionID: "foreign-location" })
+    await harness.tool("create_goal").execute({ objective: "Stay active" }, { sessionID: "foreign-project" })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    expect(harness.prompts).toEqual([])
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "foreign-project" })
+    expect(JSON.parse(result.content).goal.status).toBe("active")
+    await harness.cleanup?.()
+  })
+
+  test("rechecks session ownership before dispatching a continuation", async () => {
+    const foreignLocationSessions = new Set<string>()
+
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "moved" } }
+      foreignLocationSessions.add("moved")
+    }
+
+    const harness = await setupPlugin("foreign-dispatch", {
+      autoContinue: true,
+      continuationIntervalMs: 20,
+      events: eventGenerator(),
+      foreignLocationSessions,
+    })
+
+    await harness.tool("create_goal").execute({ objective: "Do not follow" }, { sessionID: "moved" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(harness.prompts).toEqual([])
     await harness.cleanup?.()
   })
 

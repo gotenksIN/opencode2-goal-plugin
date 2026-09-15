@@ -368,6 +368,11 @@ The plugin automatically prompts the session agent after successful execution:
   - `session.execution.succeeded` settles the previous continuation and schedules the next prompt.
   - `session.execution.failed` pauses an active goal and cancels scheduled or pending continuation state.
   - `session.execution.interrupted` pauses an active goal and cancels scheduled or pending continuation state.
+- Session ownership:
+  - Load the session before settlement, terminal pausing, scheduling, and prompt dispatch.
+  - Require the session `projectID`, location directory, and optional workspace ID to match the plugin instance `ctx.location`.
+  - Ignore events for sessions owned by another project or plugin location.
+  - Recheck ownership immediately before prompt dispatch.
 - Turn settlement:
   - Check for a pending continuation on the session.
   - Compare current `goal.progressCount` against the count stored before the turn.
