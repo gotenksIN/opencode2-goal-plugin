@@ -53,12 +53,14 @@ interface HarnessContextEvent {
   system: Array<{ type: string; text: string }>
 }
 
-interface HarnessToolHookEvent {
-  status: "completed" | "error"
+type HarnessToolHookEvent = {
   tool: string
   sessionID: string
   id: string
-}
+} & (
+  | { status: "completed"; result: { output?: unknown } }
+  | { status: "error"; error: { message: string } }
+)
 
 type ContextHook = (event: HarnessContextEvent) => Promise<void> | void
 
@@ -145,7 +147,13 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
 }
 
 async function recordSuccessfulTool(toolHooks: Map<string, ToolHook>, sessionID: string, id: string) {
-  await toolHooks.get("execute.after")?.({ status: "completed", tool: "shell", sessionID, id })
+  await toolHooks.get("execute.after")?.({
+    status: "completed",
+    tool: "shell",
+    sessionID,
+    id,
+    result: { output: { output: "", truncated: false, status: "completed", exit: 0 } },
+  })
 }
 
 describe("goal command", () => {
@@ -174,14 +182,67 @@ describe("completion evidence candidates", () => {
   test("records only successful non-goal tool call IDs", async () => {
     const harness = await setupPlugin("recording")
     const after = harness.toolHooks.get("execute.after")!
-    await after({ status: "completed", tool: "shell", sessionID: "s", id: "pre-goal-id" })
-    await after({ status: "error", tool: "shell", sessionID: "s", id: "failed-id" })
-    await after({ status: "completed", tool: "get_goal", sessionID: "s", id: "goal-id" })
+    await after({
+      status: "completed",
+      tool: "shell",
+      sessionID: "s",
+      id: "pre-goal-id",
+      result: { output: { output: "", truncated: false, status: "completed", exit: 0 } },
+    })
+    await after({ status: "error", tool: "shell", sessionID: "s", id: "failed-id", error: { message: "failed" } })
+    await after({ status: "completed", tool: "get_goal", sessionID: "s", id: "goal-id", result: {} })
     await harness.tool("create_goal").execute({ objective: "Record evidence" }, { sessionID: "s" })
     await recordSuccessfulTool(harness.toolHooks, "s", "real-id")
 
     const result = await harness.tool("get_goal").execute({}, { sessionID: "s" })
     expect(JSON.parse(result.content).evidenceCandidates).toEqual(["real-id"])
+    await harness.cleanup?.()
+  })
+
+  test("rejects completed tool events whose structured outcome failed", async () => {
+    const harness = await setupPlugin("failed-outcomes")
+    const after = harness.toolHooks.get("execute.after")!
+    await harness.tool("create_goal").execute({ objective: "Verify outcomes" }, { sessionID: "s" })
+
+    for (const [id, output] of [
+      ["nonzero", { output: "failed", truncated: false, status: "completed", exit: 1 }],
+      ["timeout", { output: "timed out", truncated: false, status: "completed", exit: 1, timeout: true }],
+      ["background", { output: "running", truncated: false, status: "running", shellID: "sh_1" }],
+    ] satisfies Array<[string, object]>) {
+      await after({ status: "completed", tool: "shell", sessionID: "s", id, result: { output } })
+    }
+
+    await after({ status: "completed", tool: "patch", sessionID: "s", id: "shared", result: {} })
+    await after({
+      status: "completed",
+      tool: "execute",
+      sessionID: "s",
+      id: "shared",
+      result: {
+        output: {
+          output: "Tool call failed",
+          toolCalls: [{ tool: "patch", status: "completed" }],
+          error: true,
+          files: [],
+        },
+      },
+    })
+    await after({
+      status: "completed",
+      tool: "execute",
+      sessionID: "s",
+      id: "child-error",
+      result: {
+        output: {
+          output: "Caught child failure",
+          toolCalls: [{ tool: "shell", status: "error" }],
+          files: [],
+        },
+      },
+    })
+
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s" })
+    expect(JSON.parse(result.content).evidenceCandidates).toEqual([])
     await harness.cleanup?.()
   })
 
@@ -319,6 +380,7 @@ describe("auto continuation", () => {
       tool: "patch",
       sessionID: "s-progress",
       id: "patch-id",
+      result: {},
     })
     await new Promise((resolve) => setTimeout(resolve, 25))
 

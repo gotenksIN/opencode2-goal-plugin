@@ -98,6 +98,7 @@ The evidence object must contain the following fields:
 ```
 
 The plugin rejects completion if `toolCallID` does not match a successful tool call from the same session.
+Nonzero or timed-out shell commands, background launches, and failed Code Mode executions do not provide evidence.
 
 ## Persistence and limits
 

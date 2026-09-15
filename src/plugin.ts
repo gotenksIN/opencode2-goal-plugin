@@ -46,6 +46,29 @@ function positiveInteger(value: PluginOptions[string], fallback: number): number
   return Math.max(1, Math.floor(finiteNonNegative(value, fallback)))
 }
 
+function structuredToolOutputSucceeded(tool: "shell" | "execute", output: ReturnType<typeof JSON.parse>): boolean {
+  if (output === null || output instanceof Object === false) return false
+
+  if (tool === "shell") {
+    return "status" in output
+      && output.status === "completed"
+      && "exit" in output
+      && output.exit === 0
+      && (!("timeout" in output) || output.timeout !== true)
+  }
+
+  if (("error" in output && output.error === true) || !("toolCalls" in output) || !Array.isArray(output.toolCalls)) {
+    return false
+  }
+
+  return output.toolCalls.every((call: ReturnType<typeof JSON.parse>) => (
+    call !== null
+    && call instanceof Object
+    && "status" in call
+    && call.status === "completed"
+  ))
+}
+
 export default Plugin.define({
   id: "opencode.goal",
   setup: async (ctx) => {
@@ -64,6 +87,7 @@ export default Plugin.define({
     const continuationTasks = new Set<Promise<void>>()
     const pendingContinuations = new Map<string, number>()
     const evidenceCandidates = new Map<string, string[]>()
+    const rejectedEvidenceCandidates = new Map<string, string[]>()
     const continuationController = new AbortController()
     let stopped = false
     let stopStream: (() => Promise<void>) | undefined
@@ -229,10 +253,42 @@ export default Plugin.define({
     })
 
     await ctx.tool.hook("execute.after", async (event) => {
-      if (stopped || event.status !== "completed" || goalToolNames.has(event.tool)) return
+      if (stopped || goalToolNames.has(event.tool)) return
       const goal = await controller.get(event.sessionID)
 
       if (!goal || goal.status !== "active") return
+      let succeeded = false
+
+      if (event.status === "completed") {
+        succeeded = event.tool !== "shell" && event.tool !== "execute"
+          ? true
+          : structuredToolOutputSucceeded(event.tool, event.result.output)
+      }
+
+      const rejected = rejectedEvidenceCandidates.get(event.sessionID) ?? []
+
+      if (!succeeded) {
+        const remaining = (evidenceCandidates.get(event.sessionID) ?? []).filter((id) => id !== event.id)
+
+        if (remaining.length > 0) evidenceCandidates.set(event.sessionID, remaining)
+        else evidenceCandidates.delete(event.sessionID)
+        rejectedEvidenceCandidates.delete(event.sessionID)
+        rejectedEvidenceCandidates.set(
+          event.sessionID,
+          [...rejected.filter((id) => id !== event.id), event.id].slice(-maxEvidenceCandidatesPerSession),
+        )
+
+        while (rejectedEvidenceCandidates.size > maxEvidenceCandidateSessions) {
+          const oldestSession = rejectedEvidenceCandidates.keys().next().value
+
+          if (oldestSession === undefined) break
+          rejectedEvidenceCandidates.delete(oldestSession)
+        }
+
+        return
+      }
+
+      if (rejected.includes(event.id)) return
       const recent = evidenceCandidates.get(event.sessionID) ?? []
       const next = [...recent.filter((id) => id !== event.id), event.id].slice(-maxEvidenceCandidatesPerSession)
       evidenceCandidates.delete(event.sessionID)
@@ -344,6 +400,7 @@ export default Plugin.define({
       for (const timer of scheduled.values()) clearTimeout(timer)
       scheduled.clear()
       evidenceCandidates.clear()
+      rejectedEvidenceCandidates.clear()
       await stopStream?.()
       await Promise.all(continuationTasks)
       pendingContinuations.clear()
