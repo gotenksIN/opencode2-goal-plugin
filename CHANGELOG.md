@@ -2,6 +2,15 @@
 
 All notable changes to `opencode2-goal-plugin` are documented in this file.
 
+## 1.0.7 (2026-09-15)
+
+- Update `@opencode/plugin` to `2.0.3` and refresh development dependencies.
+- Use OpenCode V2 execution events for automatic continuation.
+- Pause active goals after terminal failures and user interruptions.
+- Validate structured tool outcomes before accepting completion evidence.
+- Restrict continuation handling to sessions owned by the plugin instance.
+- Prevent cleanup and prompt admission races from restarting stopped goals.
+
 ## 1.0.6 (2026-09-12)
 
 - Update `@opencode/plugin` dependency to `2.0.2` for the OpenCode V2 release.
