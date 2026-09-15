@@ -380,24 +380,23 @@ The plugin automatically prompts the session agent after successful execution:
 - Debounce and concurrency guard:
   - Skip scheduling if a continuation is already scheduled or in-flight for `sessionID`.
   - Schedule continuation with `setTimeout` using `continuationIntervalMs` (default `1500ms`).
-  - Track active timer in a `timers` set.
+  - Track each active timer by session in `scheduled`.
 - Prompt dispatch:
   - Retrieve the persisted goal and verify status is `active`.
   - Record the current `progressCount` in `pendingContinuations`.
   - Dispatch a prompt via `ctx.session.prompt`:
     - `text`: `"Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence."`
     - `metadata`: `{ plugin: "opencode.goal", continuation: goal.continuationCount + 1 }`.
-    - `signal`: Pass `continuationController.signal` for cancellation.
 - Subagent handling:
   - Query `ctx.session.get({ sessionID })`.
   - If `session.parentID` is present, the session is a subagent.
   - Bypass `ctx.session.interrupt` on pause, blocked, or clear actions for subagents.
 - Teardown:
   - Set `stopped = true`.
-  - Abort `continuationController`.
   - Clear all timers and candidate maps.
   - Abort the event stream iterator.
-  - Await completion of all active continuation tasks.
+  - Do not wait for unresolved prompt admission because the Promise plugin adapter cannot cancel it.
+  - Prevent unresolved prompt calls from adding pending continuation state after teardown.
 
 ## Command transform
 

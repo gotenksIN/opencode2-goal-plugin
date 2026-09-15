@@ -546,7 +546,7 @@ describe("auto continuation", () => {
     expect(harness.prompts).toEqual([])
   })
 
-  test("waits for an in-flight continuation during cleanup", async () => {
+  test("does not wait for unresolved prompt admission during cleanup", async () => {
     let releasePrompt: () => void = () => {}
 
     const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
@@ -566,13 +566,16 @@ describe("auto continuation", () => {
     await harness.tool("create_goal").execute({ objective: "Finish prompt" }, { sessionID: "s-in-flight" })
     await new Promise((resolve) => setTimeout(resolve, 20))
 
-    let cleaned = false
-    const cleanup = Promise.resolve(harness.cleanup?.()).then(() => { cleaned = true })
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(cleaned).toBe(false)
+    const cleanup = Promise.resolve(harness.cleanup?.())
+
+    const outcome = await Promise.race([
+      cleanup.then(() => "cleaned"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 50)),
+    ])
+
+    expect(outcome).toBe("cleaned")
     releasePrompt()
     await cleanup
-    expect(cleaned).toBe(true)
   })
 })
 

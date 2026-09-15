@@ -84,11 +84,9 @@ export default Plugin.define({
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
     const scheduled = new Map<string, ReturnType<typeof setTimeout>>()
-    const continuationTasks = new Set<Promise<void>>()
     const pendingContinuations = new Map<string, number>()
     const evidenceCandidates = new Map<string, string[]>()
     const rejectedEvidenceCandidates = new Map<string, string[]>()
-    const continuationController = new AbortController()
     let stopped = false
     let stopStream: (() => Promise<void>) | undefined
 
@@ -334,7 +332,7 @@ export default Plugin.define({
           sessionID,
           text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
           metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
-        }, { signal: continuationController.signal })
+        })
 
         if (!stopped) pendingContinuations.set(sessionID, before)
       } finally {
@@ -399,9 +397,7 @@ export default Plugin.define({
 
           const timer = setTimeout(() => {
             scheduled.delete(sessionID)
-            const task = continueGoal(sessionID).catch(() => undefined)
-            continuationTasks.add(task)
-            void task.finally(() => continuationTasks.delete(task))
+            void continueGoal(sessionID).catch(() => undefined)
           }, Math.max(0, options.continuationIntervalMs ?? 1500))
 
           scheduled.set(sessionID, timer)
@@ -419,14 +415,12 @@ export default Plugin.define({
 
     return async () => {
       stopped = true
-      continuationController.abort()
 
       for (const timer of scheduled.values()) clearTimeout(timer)
       scheduled.clear()
       evidenceCandidates.clear()
       rejectedEvidenceCandidates.clear()
       await stopStream?.()
-      await Promise.all(continuationTasks)
       pendingContinuations.clear()
     }
   },
