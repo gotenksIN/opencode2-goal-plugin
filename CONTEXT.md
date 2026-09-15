@@ -396,7 +396,7 @@ The plugin automatically prompts the session agent after successful execution:
   - Clear all timers and candidate maps.
   - Abort the event stream iterator.
   - Do not wait for unresolved prompt admission because the Promise plugin adapter cannot cancel it.
-  - Prevent unresolved prompt calls from adding pending continuation state after teardown.
+  - Recheck goal state, ownership, and teardown state before an admitted prompt adds pending continuation state.
 
 ## Command transform
 

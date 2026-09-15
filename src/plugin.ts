@@ -334,7 +334,13 @@ export default Plugin.define({
           metadata: { plugin: "opencode.goal", continuation: goal.continuationCount + 1 },
         })
 
-        if (!stopped) pendingContinuations.set(sessionID, before)
+        if (stopped) return
+        const admittedGoal = await controller.get(sessionID)
+
+        if (stopped || admittedGoal?.status !== "active") return
+        const stillOwnsSession = await ownsSession(sessionID)
+
+        if (!stopped && stillOwnsSession) pendingContinuations.set(sessionID, before)
       } finally {
         inFlight.delete(sessionID)
       }

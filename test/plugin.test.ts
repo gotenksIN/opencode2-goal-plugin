@@ -455,6 +455,46 @@ describe("auto continuation", () => {
     await harness.cleanup?.()
   })
 
+  test("does not restore pending state when failed execution races prompt admission", async () => {
+    let releasePrompt: () => void = () => {}
+
+    let emitAfterResume: () => void = () => {}
+
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const afterResume = new Promise<void>((resolve) => { emitAfterResume = resolve })
+
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-admission" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield {
+        type: "session.execution.failed",
+        data: { sessionID: "s-admission", error: { type: "ProviderError", message: "failed" } },
+      }
+      await afterResume
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-admission" } }
+    }
+
+    const harness = await setupPlugin("failed-admission", {
+      autoContinue: true,
+      continuationIntervalMs: 0,
+      events: eventGenerator(),
+      promptGate,
+    })
+
+    await harness.tool("create_goal").execute({ objective: "Keep pending clear" }, { sessionID: "s-admission" })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    releasePrompt()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await harness.tool("update_goal").execute({ action: "resume" }, { sessionID: "s-admission" })
+    emitAfterResume()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-admission" })
+    expect(JSON.parse(result.content).goal.continuationCount).toBe(0)
+    await harness.cleanup?.()
+  })
+
   test("pauses after interrupted execution without auto-continuation enabled", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       await new Promise((resolve) => setTimeout(resolve, 10))
