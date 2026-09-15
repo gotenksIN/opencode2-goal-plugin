@@ -60,11 +60,10 @@ export default Plugin.define({
 
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
-    const scheduled = new Set<string>()
+    const scheduled = new Map<string, ReturnType<typeof setTimeout>>()
     const continuationTasks = new Set<Promise<void>>()
     const pendingContinuations = new Map<string, number>()
     const evidenceCandidates = new Map<string, string[]>()
-    const timers = new Set<ReturnType<typeof setTimeout>>()
     const continuationController = new AbortController()
     let stopped = false
     let stopStream: (() => Promise<void>) | undefined
@@ -280,60 +279,69 @@ export default Plugin.define({
       await controller.account(sessionID, 0, true, Boolean(goal && (goal.progressCount ?? 0) > before))
     }
 
-    if (options.autoContinue !== false) {
-      const streamController = new AbortController()
-      const stream = ctx.event.subscribe({ signal: streamController.signal })
-      const iterator = stream[Symbol.asyncIterator]()
+    const cancelContinuation = (sessionID: string): void => {
+      pendingContinuations.delete(sessionID)
+      const timer = scheduled.get(sessionID)
 
-      const streamTask = (async () => {
-        try {
-          while (!stopped) {
-            const item = await iterator.next()
+      if (timer !== undefined) clearTimeout(timer)
+      scheduled.delete(sessionID)
+    }
 
-            if (item.done) break
-            const event = item.value
-            let sessionID: string | undefined
+    const streamController = new AbortController()
+    const stream = ctx.event.subscribe({ signal: streamController.signal })
+    const iterator = stream[Symbol.asyncIterator]()
 
-            if (event.type === "session.idle") {
-              sessionID = event.data.sessionID
-            } else if (event.type === "session.status" && event.data.status.type === "idle") {
-              sessionID = event.data.sessionID
-            }
+    const streamTask = (async () => {
+      try {
+        while (!stopped) {
+          const item = await iterator.next()
 
-            if (!sessionID) continue
-            await settleContinuation(sessionID)
+          if (item.done) break
+          const event = item.value
 
-            if (scheduled.has(sessionID) || inFlight.has(sessionID)) continue
-            scheduled.add(sessionID)
-
-            const timer = setTimeout(() => {
-              timers.delete(timer)
-              scheduled.delete(sessionID)
-              const task = continueGoal(sessionID).catch(() => undefined)
-              continuationTasks.add(task)
-              void task.finally(() => continuationTasks.delete(task))
-            }, Math.max(0, options.continuationIntervalMs ?? 1500))
-
-            timers.add(timer)
+          if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+            const sessionID = event.data.sessionID
+            cancelContinuation(sessionID)
+            const detail = event.type === "session.execution.failed" ? event.data.error.message : event.data.reason
+            await controller.pauseAfterExecution(
+              sessionID,
+              event.type === "session.execution.failed" ? "failed" : "interrupted",
+              detail,
+            )
+            continue
           }
-        } catch {
-          if (!stopped) return
-        }
-      })()
 
-      stopStream = async () => {
-        streamController.abort()
-        await iterator.return?.()
-        await streamTask
+          if (event.type !== "session.execution.succeeded") continue
+          const sessionID = event.data.sessionID
+          await settleContinuation(sessionID)
+
+          if (options.autoContinue === false || scheduled.has(sessionID) || inFlight.has(sessionID)) continue
+
+          const timer = setTimeout(() => {
+            scheduled.delete(sessionID)
+            const task = continueGoal(sessionID).catch(() => undefined)
+            continuationTasks.add(task)
+            void task.finally(() => continuationTasks.delete(task))
+          }, Math.max(0, options.continuationIntervalMs ?? 1500))
+
+          scheduled.set(sessionID, timer)
+        }
+      } catch {
+        if (!stopped) return
       }
+    })()
+
+    stopStream = async () => {
+      streamController.abort()
+      await iterator.return?.()
+      await streamTask
     }
 
     return async () => {
       stopped = true
       continuationController.abort()
 
-      for (const timer of timers) clearTimeout(timer)
-      timers.clear()
+      for (const timer of scheduled.values()) clearTimeout(timer)
       scheduled.clear()
       evidenceCandidates.clear()
       await stopStream?.()

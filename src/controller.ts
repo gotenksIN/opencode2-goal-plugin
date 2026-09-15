@@ -124,6 +124,19 @@ export class GoalController {
     })
   }
 
+  pauseAfterExecution(sessionID: string, outcome: "failed" | "interrupted", detail: string): Promise<Goal | undefined> {
+    return this.store.update(sessionID, (goal) => {
+      if (!goal || goal.status !== "active") return goal
+      const at = now()
+      goal.updatedAt = at
+      stopActiveClock(goal, at)
+      goal.status = "paused"
+      history(goal, `execution-${outcome}`, detail)
+
+      return goal
+    })
+  }
+
   checkpoint(sessionID: string, summary: string, source: string, madeProgress = false): Promise<Goal | undefined> {
     return this.store.update(sessionID, (goal) => {
       if (!goal || goal.status !== "active") return goal

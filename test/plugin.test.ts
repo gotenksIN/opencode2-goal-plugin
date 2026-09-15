@@ -69,8 +69,9 @@ const root = join(import.meta.dir, ".plugin")
 afterEach(() => rm(root, { recursive: true, force: true }))
 
 type HarnessEvent =
-  | { type: "session.idle"; data: { sessionID: string } }
-  | { type: "session.status"; data: { sessionID: string; status: { type: string } } }
+  | { type: "session.execution.succeeded"; data: { sessionID: string } }
+  | { type: "session.execution.failed"; data: { sessionID: string; error: { type: string; message: string } } }
+  | { type: "session.execution.interrupted"; data: { sessionID: string; reason: "user" | "shutdown" | "superseded" | "inactivity" } }
 
 interface HarnessOptions {
   childSessions?: Set<string>
@@ -274,9 +275,10 @@ describe("subagent session interrupts", () => {
 describe("auto continuation", () => {
   test("sends the configured maximum number of continuation prompts", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.status", data: { sessionID: "s-limited", status: { type: "idle" } } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-limited" } }
       await new Promise((resolve) => setTimeout(resolve, 30))
-      yield { type: "session.status", data: { sessionID: "s-limited", status: { type: "idle" } } }
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-limited" } }
     }
 
     const harness = await setupPlugin("auto-limit", {
@@ -297,9 +299,10 @@ describe("auto continuation", () => {
 
   test("accounts progress when the continued turn becomes idle", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.idle", data: { sessionID: "s-progress" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-progress" } }
       await new Promise((resolve) => setTimeout(resolve, 60))
-      yield { type: "session.idle", data: { sessionID: "s-progress" } }
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-progress" } }
     }
 
     const harness = await setupPlugin("auto-progress", {
@@ -325,9 +328,10 @@ describe("auto continuation", () => {
     await harness.cleanup?.()
   })
 
-  test("sends continuation prompt on session.status idle event", async () => {
+  test("sends continuation prompt after successful execution", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.status", data: { sessionID: "s-auto", status: { type: "idle" } } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-auto" } }
     }
 
     const harness = await setupPlugin("auto-status", {
@@ -342,26 +346,60 @@ describe("auto continuation", () => {
     await harness.cleanup?.()
   })
 
-  test("sends continuation prompt on legacy session.idle event", async () => {
+  test("pauses after failed execution and cancels a scheduled continuation", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.idle", data: { sessionID: "s-idle" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-failed" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield {
+        type: "session.execution.failed",
+        data: { sessionID: "s-failed", error: { type: "ProviderError", message: "Provider stopped" } },
+      }
     }
 
-    const harness = await setupPlugin("auto-idle", {
+    const harness = await setupPlugin("auto-failed", {
       autoContinue: true,
-      continuationIntervalMs: 10,
+      continuationIntervalMs: 100,
       events: eventGenerator(),
     })
 
-    await harness.tool("create_goal").execute({ objective: "Idle task" }, { sessionID: "s-idle" })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(harness.prompts.some((p) => p.sessionID === "s-idle" && p.text.includes("Continue the persisted goal"))).toBe(true)
+    await harness.tool("create_goal").execute({ objective: "Pause on failure" }, { sessionID: "s-failed" })
+    await new Promise((resolve) => setTimeout(resolve, 130))
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-failed" })
+    expect(JSON.parse(result.content).goal.status).toBe("paused")
+    expect(JSON.parse(result.content).goal.history.at(-1)).toMatchObject({
+      action: "execution-failed",
+      detail: "Provider stopped",
+    })
+    expect(harness.prompts).toEqual([])
+    await harness.cleanup?.()
+  })
+
+  test("pauses after interrupted execution without auto-continuation enabled", async () => {
+    async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield {
+        type: "session.execution.interrupted",
+        data: { sessionID: "s-interrupted", reason: "user" },
+      }
+    }
+
+    const harness = await setupPlugin("auto-interrupted", { events: eventGenerator() })
+    await harness.tool("create_goal").execute({ objective: "Pause on interrupt" }, { sessionID: "s-interrupted" })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    const result = await harness.tool("get_goal").execute({}, { sessionID: "s-interrupted" })
+    expect(JSON.parse(result.content).goal.status).toBe("paused")
+    expect(JSON.parse(result.content).goal.history.at(-1)).toMatchObject({
+      action: "execution-interrupted",
+      detail: "user",
+    })
     await harness.cleanup?.()
   })
 
   test("cancels scheduled continuation during cleanup", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.idle", data: { sessionID: "s-cleanup" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-cleanup" } }
     }
 
     const harness = await setupPlugin("auto-cleanup", {
@@ -383,7 +421,8 @@ describe("auto continuation", () => {
     const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
 
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
-      yield { type: "session.idle", data: { sessionID: "s-in-flight" } }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      yield { type: "session.execution.succeeded", data: { sessionID: "s-in-flight" } }
     }
 
     const harness = await setupPlugin("auto-in-flight", {

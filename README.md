@@ -32,7 +32,7 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
 
 You can configure the following options:
 
-- `autoContinue`: Enables automatic continuation when the session becomes idle. Defaults to `true`.
+- `autoContinue`: Enables automatic continuation after successful session execution. Defaults to `true`.
 - `maxContinuations`: Sets the maximum number of automatic continuation turns. Defaults to `12`.
 - `continuationIntervalMs`: Sets the delay in milliseconds before an automatic continuation prompt. Defaults to `1500`.
 - `maxDurationMs`: Sets the maximum active execution time in milliseconds before setting status to `budgetLimited`. Defaults to `3600000` (1 hour).
@@ -110,7 +110,8 @@ Existing custom directories retain their original permissions.
 Each goal record contains timestamps, active duration, continuation counts, checkpoints, history entries, and approximate token estimates.
 The plugin estimates token usage from serialized context messages divided by four.
 
-The plugin triggers automatic continuation when a session becomes idle.
+The plugin triggers automatic continuation after successful session execution.
+It pauses an active goal after terminal execution failure or interruption until you resume it.
 It checks limits before and during continuation:
 
 - Reaching `maxTokens` sets goal status to `usageLimited`.

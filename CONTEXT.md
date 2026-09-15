@@ -20,7 +20,7 @@ export type GoalStatus =
 ```
 
 - `active`: The goal is currently executing. The active duration clock accumulates time.
-- `paused`: The goal is paused manually or paused after turns without progress. The active clock is stopped.
+- `paused`: The goal is paused manually, after turns without progress, or after a failed or interrupted execution. The active clock is stopped.
 - `blocked`: The goal is blocked by an external requirement. The active clock is stopped.
 - `usageLimited`: Token estimation reached the configured token limit. The active clock is stopped.
 - `budgetLimited`: Execution reached maximum duration or maximum continuations. The active clock is stopped.
@@ -218,13 +218,18 @@ resume │   ┌──────────┘   │   └──────�
 6. `clear(sessionID)`:
    - Deletes the goal entry from the persistent database.
 
-7. `checkpoint(sessionID, summary, source, madeProgress)`:
+7. `pauseAfterExecution(sessionID, outcome, detail)`:
+   - Executes only when an active goal exists for the session.
+   - Sets status to `paused` after a terminal failed or interrupted execution.
+   - Stops the active clock and records an `"execution-failed"` or `"execution-interrupted"` history entry.
+
+8. `checkpoint(sessionID, summary, source, madeProgress)`:
    - Executes only when an active goal exists for the session.
    - Appends `{ at: now(), summary, source }` to `goal.checkpoints` and caps the array at 50 entries.
    - When `madeProgress` is `true`, resets `noProgressCount = 0` and increments `progressCount`.
    - Records a `"checkpoint"` history entry.
 
-8. `account(sessionID, tokenEstimate, continuation, madeProgress)`:
+9. `account(sessionID, tokenEstimate, continuation, madeProgress)`:
    - Executes only when an active goal exists for the session.
    - Adds non-negative rounded `tokenEstimate` to `goal.tokenEstimate`.
    - Increments `continuationCount` when `continuation` is `true`.
@@ -353,12 +358,13 @@ The plugin injects active goal state into model context on each turn:
 
 ## Auto-continuation engine
 
-The plugin automatically prompts the session agent when execution becomes idle:
+The plugin automatically prompts the session agent after successful execution:
 
 - Subscription: Subscribes to the OpenCode event stream via `ctx.event.subscribe({ signal })`.
 - Handled events:
-  - `session.idle` event.
-  - `session.status` event where `status.type === "idle"`.
+  - `session.execution.succeeded` settles the previous continuation and schedules the next prompt.
+  - `session.execution.failed` pauses an active goal and cancels scheduled or pending continuation state.
+  - `session.execution.interrupted` pauses an active goal and cancels scheduled or pending continuation state.
 - Turn settlement:
   - Check for a pending continuation on the session.
   - Compare current `goal.progressCount` against the count stored before the turn.
