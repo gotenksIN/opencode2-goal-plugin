@@ -25,7 +25,7 @@ export class GoalStore {
 
   private async ensureDirectory(): Promise<void> {
     await mkdir(this.lockDirectory, { recursive: true, mode: 0o700 })
-    await chmod(this.lockDirectory, 0o700)
+    await chmod(this.lockDirectory, 0o700).catch(() => undefined)
   }
 
   private async read(sessionID: string): Promise<Goal | undefined> {

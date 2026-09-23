@@ -63,7 +63,9 @@ export const createGoalPlugin = (lockDirectory?: string) => Plugin.define({
   setup: async (ctx) => {
     const options = ctx.options
 
-    if ("dataFile" in options) throw new Error("dataFile is no longer supported; goals use OpenCode plugin storage")
+    if ("dataFile" in options && options.dataFile !== undefined) {
+      throw new Error("dataFile is no longer supported; remove dataFile from plugin options because goals use OpenCode plugin storage")
+    }
 
     const limits = {
       maxContinuations: configuredLimit("maxContinuations", options.maxContinuations, true),
