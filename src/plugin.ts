@@ -99,10 +99,11 @@ export default Plugin.define({
     const ownsSession = async (sessionID: string): Promise<boolean> => {
       try {
         const session = await ctx.session.get({ sessionID })
+        const workspaceID = "workspaceID" in session.location ? session.location.workspaceID : undefined
 
         return session.projectID === ctx.location.project.id
           && session.location.directory === ctx.location.directory
-          && (!("workspaceID" in session.location) || session.location.workspaceID === ctx.location.workspaceID)
+          && workspaceID === ctx.location.workspaceID
       } catch {
         return false
       }
@@ -327,7 +328,7 @@ export default Plugin.define({
       await controller.checkpoint(event.sessionID, `Successful ${event.tool} tool call`, event.tool, meaningful.has(event.tool))
     })
 
-    const continueGoal = async (sessionID: string) => {
+    const continueGoal = async (sessionID: string, createdAt: string) => {
       if (stopped || inFlight.has(sessionID)) return
       const admissionToken = Symbol(sessionID)
       const generation = generations.get(sessionID)
@@ -339,7 +340,7 @@ export default Plugin.define({
         if (!(await ownsSession(sessionID))) return
         const goal = await controller.get(sessionID)
 
-        if (!goal || goal.status !== "active" || generation !== generations.get(sessionID)) return
+        if (!goal || goal.status !== "active" || goal.createdAt !== createdAt || generation !== generations.get(sessionID)) return
         const before = goal.progressCount ?? 0
         const stillOwned = await ownsSession(sessionID)
 
@@ -423,7 +424,7 @@ export default Plugin.define({
         scheduled.delete(sessionID)
 
         if (generation !== generations.get(sessionID)) return
-        void continueGoal(sessionID).catch(() => undefined)
+        void continueGoal(sessionID, latest.createdAt).catch(() => undefined)
       }, Math.max(0, options.continuationIntervalMs ?? 1500))
 
       scheduled.set(sessionID, timer)
@@ -465,7 +466,10 @@ export default Plugin.define({
             }
 
             const sessionID = event.data.sessionID
+            const generation = generations.get(sessionID)
             await settleContinuation(sessionID)
+
+            if (generation !== generations.get(sessionID)) continue
 
             if (inFlight.has(sessionID)) {
               if (admissionTokens.has(sessionID)) rescheduleAfterAdmission.add(sessionID)
