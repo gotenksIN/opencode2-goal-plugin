@@ -58,7 +58,7 @@ function structuredToolOutputSucceeded(tool: "shell" | "execute", output: Return
     ))
 }
 
-export default Plugin.define({
+export const createGoalPlugin = (lockDirectory?: string) => Plugin.define({
   id: "opencode.goal",
   setup: async (ctx) => {
     const options = ctx.options
@@ -76,7 +76,7 @@ export default Plugin.define({
       projectID: ctx.location.project.id,
       directory: ctx.location.directory,
       workspaceID: ctx.location.workspaceID,
-    }), limits)
+    }, lockDirectory), limits)
 
     const inFlight = new Set<string>()
     const admissionTokens = new Map<string, symbol>()
@@ -500,3 +500,5 @@ export default Plugin.define({
     }
   },
 })
+
+export default createGoalPlugin()

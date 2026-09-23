@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { join } from "node:path"
-import plugin from "../index"
+import { createGoalPlugin } from "../src/plugin"
 import type { CreateGoalInput, UpdateGoalInput } from "../src/types"
 import { memoryStorage } from "./storage"
 
@@ -139,7 +139,7 @@ async function setupPlugin(_name: string, options: HarnessOptions = {}) {
   }
 
   // SAFETY: the harness stubs the option, tool, command, session, and event domains that setup consumes.
-  const cleanup = await plugin.setup(ctx as never)
+  const cleanup = await createGoalPlugin(join(root, "locks")).setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
 
   return { cleanup, sessionHooks, toolHooks, tools, tool, interrupts, prompts }
