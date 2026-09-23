@@ -17,21 +17,6 @@ interface RegisteredTool {
   execute: (input: ToolInput, context: ToolContext) => Promise<{ content: string }>
 }
 
-interface HarnessCommandInvocation {
-  sessionID: string
-  prompt: {
-    text: string
-    files?: Array<{ uri: string; mention?: { start: number; end: number; text: string } }>
-  }
-  delivery: "steer" | "queue"
-}
-
-interface HarnessCommand {
-  name: string
-  description?: string
-  execute: (input: HarnessCommandInvocation) => Promise<void>
-}
-
 interface HarnessSession {
   id: string
   parentID?: string
@@ -92,7 +77,6 @@ interface HarnessOptions {
 
 async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const tools: RegisteredTool[] = []
-  const commands = new Map<string, HarnessCommand>()
   const sessionHooks = new Map<string, ContextHook>()
   const toolHooks = new Map<string, ToolHook>()
   const interrupts: string[] = []
@@ -117,11 +101,7 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
       hook: async (hookName: string, callback: ToolHook) => { toolHooks.set(hookName, callback) },
     },
     command: {
-      transform: async (callback: Function) => callback({
-        add: (command: HarnessCommand) => {
-          commands.set(command.name, command)
-        },
-      }),
+      transform: async (callback: Function) => callback({ add: () => {} }),
     },
     session: {
       hook: async (hookName: string, callback: ContextHook) => { sessionHooks.set(hookName, callback) },
@@ -161,7 +141,7 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
   const cleanup = await plugin.setup(ctx as never)
   const tool = (toolName: string) => tools.find((item) => item.name === toolName)!
 
-  return { cleanup, commands, sessionHooks, toolHooks, tools, tool, interrupts, prompts }
+  return { cleanup, sessionHooks, toolHooks, tools, tool, interrupts, prompts }
 }
 
 async function recordSuccessfulTool(toolHooks: Map<string, ToolHook>, sessionID: string, id: string) {
@@ -173,28 +153,6 @@ async function recordSuccessfulTool(toolHooks: Map<string, ToolHook>, sessionID:
     result: { output: { output: "", truncated: false, status: "completed", exit: 0 } },
   })
 }
-
-describe("goal command", () => {
-  test("executes goal command by dispatching prompt to session", async () => {
-    const harness = await setupPlugin("command-exec")
-    const goalCmd = harness.commands.get("goal")
-    expect(goalCmd).toBeDefined()
-    await goalCmd?.execute({
-      sessionID: "s-123",
-      prompt: {
-        text: "create Finish the feature @plan.md",
-        files: [{ uri: "file:///plan.md", mention: { start: 26, end: 34, text: "@plan.md" } }],
-      },
-      delivery: "queue",
-    })
-    expect(harness.prompts).toHaveLength(1)
-    expect(harness.prompts[0]?.sessionID).toBe("s-123")
-    expect(harness.prompts[0]?.text).toContain("Arguments: create Finish the feature @plan.md")
-    expect(harness.prompts[0]?.delivery).toBe("queue")
-    expect(harness.prompts[0]?.files).toEqual([{ uri: "file:///plan.md" }])
-    await harness.cleanup?.()
-  })
-})
 
 describe("completion evidence candidates", () => {
   test("records only successful non-goal tool call IDs", async () => {
