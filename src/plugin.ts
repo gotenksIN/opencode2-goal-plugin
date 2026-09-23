@@ -98,7 +98,7 @@ export default Plugin.define({
 
         return session.projectID === ctx.location.project.id
           && session.location.directory === ctx.location.directory
-          && session.location.workspaceID === ctx.location.workspaceID
+          && (!("workspaceID" in session.location) || session.location.workspaceID === ctx.location.workspaceID)
       } catch {
         return false
       }
