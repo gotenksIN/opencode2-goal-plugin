@@ -321,7 +321,7 @@ To verify goal completion, the plugin tracks valid tool call IDs in memory:
   - Skip goal management tools (`get_goal`, `create_goal`, `update_goal`, `clear_goal`).
   - Reject hook errors and completed events whose structured result does not establish success.
   - For `shell`, require a completed foreground process with exit code `0` and no timeout.
-  - For Code Mode `execute`, reject JavaScript errors and any child call that is running or failed.
+  - For Code Mode `execute`, require at least one nested tool call and reject JavaScript errors or any child call that is running or failed.
   - Treat nested Code Mode calls with the same call ID as one evidence outcome. Any failed nested outcome invalidates that ID.
 - Active check: Verify that the session has a stored goal with status `active`.
 - In-memory candidate cache:

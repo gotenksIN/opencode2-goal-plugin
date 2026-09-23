@@ -63,12 +63,13 @@ function structuredToolOutputSucceeded(tool: "shell" | "execute", output: Return
     return false
   }
 
-  return output.toolCalls.every((call: ReturnType<typeof JSON.parse>) => (
-    call !== null
-    && call instanceof Object
-    && "status" in call
-    && call.status === "completed"
-  ))
+  return output.toolCalls.length > 0
+    && output.toolCalls.every((call: ReturnType<typeof JSON.parse>) => (
+      call !== null
+      && call instanceof Object
+      && "status" in call
+      && call.status === "completed"
+    ))
 }
 
 export default Plugin.define({
