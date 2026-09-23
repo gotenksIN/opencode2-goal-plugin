@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises"
 import { join } from "node:path"
 import plugin from "../index"
 import type { CreateGoalInput, UpdateGoalInput } from "../src/types"
+import { memoryStorage } from "./storage"
 
 interface EmptyToolInput {}
 
@@ -75,7 +76,7 @@ interface HarnessOptions {
   events?: AsyncIterable<HarnessEvent>
 }
 
-async function setupPlugin(name: string, options: HarnessOptions = {}) {
+async function setupPlugin(_name: string, options: HarnessOptions = {}) {
   const tools: RegisteredTool[] = []
   const sessionHooks = new Map<string, ContextHook>()
   const toolHooks = new Map<string, ToolHook>()
@@ -94,8 +95,8 @@ async function setupPlugin(name: string, options: HarnessOptions = {}) {
       maxContinuations: options.maxContinuations,
       maxTokens: options.maxTokens,
       noProgressTurns: options.noProgressTurns,
-      dataFile: join(root, `${name}.json`),
     },
+    storage: memoryStorage(),
     tool: {
       transform: async (callback: Function) => callback({ add: (tool: RegisteredTool) => tools.push(tool) }),
       hook: async (hookName: string, callback: ToolHook) => { toolHooks.set(hookName, callback) },

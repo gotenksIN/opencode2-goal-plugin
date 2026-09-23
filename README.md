@@ -13,11 +13,10 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode2-goal-plugin@1.0.7",
+      "package": "opencode2-goal-plugin",
       "options": {
         "autoContinue": true,
-        "continuationIntervalMs": 1500,
-        "dataFile": "~/.local/share/opencode-goal-plugin/goals.json"
+        "continuationIntervalMs": 1500
       }
     }
   ]
@@ -34,7 +33,6 @@ You can configure the following options:
 - `maxDurationMs`: Sets the maximum active execution time in milliseconds before setting status to `budgetLimited`. Disabled unless you configure a finite non-negative number.
 - `maxTokens`: Sets the maximum estimated context token count before setting status to `usageLimited`. Disabled unless you configure a finite non-negative number.
 - `noProgressTurns`: Sets the maximum consecutive continuation turns without file edits before pausing the goal. Disabled unless you configure a positive integer.
-- `dataFile`: Specifies a custom file path for the goal database. Defaults to `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
 
 ## Commands
 
@@ -98,11 +96,13 @@ Nonzero or timed-out shell commands, background launches, and failed Code Mode e
 
 ## Persistence and limits
 
-The plugin stores goal records in a single JSON file.
-It resolves the database path from the `dataFile` option or uses `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
-The store uses atomic file replacement and cross-process file locking.
-It applies permissions of `0700` for created directories and `0600` for files on supported systems.
-Existing custom directories retain their original permissions.
+The plugin stores each goal in OpenCode V2 plugin storage under a project, location (including worktree and workspace), and session key.
+The store serializes transitions across local processes with a per-goal lock under `~/.local/share/opencode-goal-plugin/locks`.
+Run instances under the same OS account on the same host so they share that lock directory.
+The lock directory uses mode `0700`, and lock files use mode `0600`.
+The plugin never writes a JSON goal-state file.
+Goals saved in earlier JSON database files are not imported or available after this change.
+Remove the obsolete `dataFile` option from your configuration; the plugin rejects it.
 
 Each goal record contains timestamps, active duration, continuation counts, checkpoints, history entries, and approximate token estimates.
 The token counter sums approximate request context lengths, estimated from serialized context messages divided by four.

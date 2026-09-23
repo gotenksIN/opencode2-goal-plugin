@@ -113,14 +113,9 @@ export interface Goal {
 - `noProgressCount`: Number of consecutive continuation turns without file edits.
 - `progressCount`: Total count of progress-marking tool executions.
 
-### Database and limits
+### Limits
 
 ```ts
-export interface GoalDatabase {
-  version: 1
-  goals: Record<string, Goal>
-}
-
 export interface GoalLimits {
   maxContinuations?: number
   maxTokens?: number
@@ -135,7 +130,6 @@ export interface PluginOptions {
   maxDurationMs?: number
   maxTokens?: number
   noProgressTurns?: number
-  dataFile?: string
 }
 ```
 
@@ -214,7 +208,7 @@ resume │   ┌──────────┘   │   └──────�
    - Sets status to `complete` and records a `"complete"` history entry.
 
 6. `clear(sessionID)`:
-   - Deletes the goal entry from the persistent database.
+   - Removes the goal entry from plugin storage.
 
 7. `pauseAfterExecution(sessionID, outcome, detail)`:
    - Executes only when an active goal exists for the session.
@@ -241,75 +235,25 @@ resume │   ┌──────────┘   │   └──────�
 
 ## Persistence specification
 
-`GoalStore` (`src/store.ts`) provides persistent disk storage.
+`GoalStore` (`src/store.ts`) stores each goal using OpenCode V2 `ctx.storage`.
+The host namespaces storage by plugin ID, but not by project or session.
+Keys use a version prefix and a tuple of project ID, location directory, optional workspace ID, and session ID.
+The store uses `get`, `set`, and `remove`; it does not read the old JSON goal database or import its records.
+Goals saved by earlier JSON-file versions become inaccessible after this change.
+The obsolete `dataFile` option causes plugin setup to fail with an actionable error.
 
-### JSON schema
+### Cross-process transitions
 
-The database file stores a single JSON document adhering to schema version 1:
-
-```json
-{
-  "version": 1,
-  "goals": {
-    "ses_example_1": {
-      "sessionID": "ses_example_1",
-      "objective": "Implement the feature",
-      "status": "active",
-      "evidence": [],
-      "checkpoints": [],
-      "history": [],
-      "createdAt": "2026-08-25T10:00:00.000Z",
-      "updatedAt": "2026-08-25T10:00:00.000Z",
-      "activeSince": "2026-08-25T10:00:00.000Z",
-      "activeTimeMs": 0,
-      "continuationCount": 0,
-      "tokenEstimate": 1200,
-      "noProgressCount": 0,
-      "progressCount": 0
-    }
-  }
-}
-```
-
-### Path resolution and file permissions
-
-- Custom path: When `options.dataFile` is set, expand leading `~/` to `homedir()`.
-- Default path: Use `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
-- Directory permissions: Create parent directories recursively with mode `0o700`. Apply `chmod(dir, 0o700)` for default plugin paths. Preserve directory permissions when using custom paths (`protectDirectory = false`).
-- File permissions: Write database and lock files with mode `0o600`. Enforce `chmod(file, 0o600)` after writes.
-
-### Cross-process locking protocol
-
-`GoalStore` uses hard-link locking to synchronize access across separate processes:
-
-1. The lock file path is `${this.path}.lock`.
-2. Generate a random UUID token.
-3. Write a candidate lock file `${lockPath}.${process.pid}.${token}.tmp` containing JSON `{ pid: process.pid, token }` using exclusive creation flag `"wx"` and mode `0o600`.
-4. Poll until the deadline (`Date.now() + 5000ms`) with a `10ms` delay between attempts:
-   - Call `link(candidate, lockPath)`. Hard-link creation is atomic on POSIX filesystems.
-   - On success: delete the candidate file with `unlink(candidate)` and return the release callback.
-   - On `EEXIST` (lock currently held):
-     - Read the existing lock file and parse the owner PID.
-     - Check owner process aliveness using `process.kill(pid, 0)`.
-     - If `kill` throws `ESRCH` (owner process terminated), throw an error: `"Remove stale goal store lock before retrying: <lockPath>"`.
-     - Otherwise, wait for the next retry interval.
-   - On any unexpected error: delete the candidate file and rethrow.
-5. If the deadline expires: delete the candidate file and throw a lock timeout error.
-6. Lock release:
-   - Read `${lockPath}`.
-   - Unlink `${lockPath}` only if `lock.token` matches the candidate token.
-7. In-process serialization:
-   - Queue store operations through an internal promise chain (`this.queue`) to avoid in-process lock contention.
-
-### Atomic file replacement
-
-When writing database updates:
-
-1. Ensure the parent directory exists.
-2. Write serialized JSON to a unique temporary file `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp` with mode `0o600`.
-3. Replace the target file using atomic `rename(temporary, this.path)`.
-4. Enforce file permissions `0o600` on the target file.
-5. On failure, remove the temporary file with `unlink` and rethrow the error.
+The V2 storage API has no compare-and-swap or transaction operation.
+Keep the existing hard-link lock around each read, transition, and write or removal to prevent lost updates.
+Use a SHA-256 digest of the scoped key as the lock filename under `~/.local/share/opencode-goal-plugin/locks`.
+All local plugin processes under the same OS account use this directory, even when running in different worktrees.
+Create the directory with mode `0o700` and lock candidates with mode `0o600`.
+Lock files contain only an owner PID and random token, never goal state.
+Acquire with an atomic hard link, retry for up to five seconds, and refuse to remove a stale lock without manual intervention.
+Release only a lock with the matching token.
+Queue transitions within each store instance.
+This locking contract requires the same local filesystem and home directory across processes; it does not coordinate separate hosts that share a remote storage service.
 
 ## Evidence candidate tracking
 

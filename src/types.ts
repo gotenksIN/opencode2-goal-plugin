@@ -71,11 +71,6 @@ export interface Goal {
   progressCount?: number
 }
 
-export interface GoalDatabase {
-  version: 1
-  goals: Record<string, Goal>
-}
-
 export interface GoalLimits {
   maxContinuations?: number
   maxTokens?: number

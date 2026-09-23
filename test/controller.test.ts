@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
-import { join } from "node:path"
 import { GoalController } from "../src/controller"
 import { GoalStore } from "../src/store"
+import { memoryStorage } from "./storage"
 
-const root = join(import.meta.dir, ".controller")
+const scope = { projectID: "project", directory: "/project" }
 
-afterEach(() => rm(root, { recursive: true, force: true }))
+const lockDirectory = `${import.meta.dir}/.controller-locks`
+
+afterEach(() => rm(lockDirectory, { recursive: true, force: true }))
 
 describe("goal lifecycle", () => {
   test("tracks transitions, checkpoints, and completion evidence", async () => {
-    const controller = new GoalController(new GoalStore(join(root, "goals.json")))
+    const controller = new GoalController(new GoalStore(memoryStorage(), scope, lockDirectory))
     await controller.create("s", "Deliver result")
     await controller.checkpoint("s", "Code changed", "write")
     expect((await controller.update("s", "pause")).status).toBe("paused")
@@ -32,7 +34,7 @@ describe("goal lifecycle", () => {
   })
 
   test("enforces continuation and no-progress limits", async () => {
-    const controller = new GoalController(new GoalStore(join(root, "limits.json")), {
+    const controller = new GoalController(new GoalStore(memoryStorage(), scope, lockDirectory), {
       maxContinuations: 2, maxTokens: 100, maxDurationMs: 100_000, noProgressTurns: 5,
     })
 
@@ -44,7 +46,7 @@ describe("goal lifecycle", () => {
   })
 
   test("tracks meaningful progress after old checkpoints are capped", async () => {
-    const controller = new GoalController(new GoalStore(join(root, "progress.json")))
+    const controller = new GoalController(new GoalStore(memoryStorage(), scope, lockDirectory))
     await controller.create("s", "Long task")
 
     for (let index = 0; index < 51; index++) {

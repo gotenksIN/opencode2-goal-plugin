@@ -1,62 +1,50 @@
-import { chmod, link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
-import { dirname } from "node:path"
+import { createHash } from "node:crypto"
+import { chmod, link, mkdir, readFile, unlink, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import type { Goal, GoalDatabase } from "./types"
-
-const emptyDatabase = (): GoalDatabase => ({ version: 1, goals: {} })
+import type { StorageDomain } from "@opencode/plugin/promise/storage"
+import type { Goal } from "./types"
 
 const lockRetryMs = 10
 
 const lockTimeoutMs = 5000
 
 export class GoalStore {
-  readonly path: string
   private queue: Promise<unknown> = Promise.resolve()
 
-  constructor(path: string, private readonly protectDirectory = true) {
-    this.path = path
+  constructor(
+    private readonly storage: StorageDomain,
+    private readonly scope: { projectID: string; directory: string; workspaceID?: string },
+    private readonly lockDirectory = join(homedir(), ".local", "share", "opencode-goal-plugin", "locks"),
+  ) {}
+
+  private key(sessionID: string): string {
+    return `goal/v1/${JSON.stringify([this.scope.projectID, this.scope.directory, this.scope.workspaceID ?? null, sessionID])}`
   }
 
   private async ensureDirectory(): Promise<void> {
-    const directory = dirname(this.path)
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-
-    if (this.protectDirectory) await chmod(directory, 0o700).catch(() => undefined)
+    await mkdir(this.lockDirectory, { recursive: true, mode: 0o700 })
+    await chmod(this.lockDirectory, 0o700)
   }
 
-  private async readUnlocked(): Promise<GoalDatabase> {
-    try {
-      const value = JSON.parse(await readFile(this.path, "utf8"))
+  private async read(sessionID: string): Promise<Goal | undefined> {
+    const value = await this.storage.get(this.key(sessionID))
 
-      if (value.version !== 1 || !value.goals || value.goals instanceof Object === false) {
-        throw new Error("Unsupported goal database format")
-      }
+    if (value === undefined) return undefined
+    const goal: Goal = JSON.parse(JSON.stringify(value))
 
-      return value
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return emptyDatabase()
-      throw error
-    }
-  }
-
-  private async writeUnlocked(database: GoalDatabase): Promise<void> {
-    await this.ensureDirectory()
-    const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`
-
-    try {
-      await writeFile(temporary, `${JSON.stringify(database, null, 2)}\n`, { mode: 0o600 })
-      await rename(temporary, this.path)
-    } catch (error) {
-      await unlink(temporary).catch(() => undefined)
-      throw error
+    if (!goal || goal.sessionID !== sessionID) {
+      throw new Error("Unsupported stored goal format")
     }
 
-    await chmod(this.path, 0o600).catch(() => undefined)
+    return goal
   }
 
-  private async acquireFileLock(): Promise<() => Promise<void>> {
+  private async acquireFileLock(sessionID: string): Promise<() => Promise<void>> {
     await this.ensureDirectory()
-    const lockPath = `${this.path}.lock`
+    const digest = createHash("sha256").update(this.key(sessionID)).digest("hex")
+    const lockPath = join(this.lockDirectory, `${digest}.lock`)
     const deadline = Date.now() + lockTimeoutMs
     const token = crypto.randomUUID()
     const candidate = `${lockPath}.${process.pid}.${token}.tmp`
@@ -122,22 +110,20 @@ export class GoalStore {
   }
 
   get(sessionID: string): Promise<Goal | undefined> {
-    return this.locked(async () => structuredClone((await this.readUnlocked()).goals[sessionID]))
+    return this.read(sessionID)
   }
 
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal): Promise<Goal>
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined>
   update(sessionID: string, mutate: (goal: Goal | undefined) => Goal | undefined): Promise<Goal | undefined> {
     return this.locked(async () => {
-      const release = await this.acquireFileLock()
+      const release = await this.acquireFileLock(sessionID)
 
       try {
-        const database = await this.readUnlocked()
-        const next = mutate(structuredClone(database.goals[sessionID]))
+        const next = mutate(await this.read(sessionID))
 
-        if (next) database.goals[sessionID] = next
-        else delete database.goals[sessionID]
-        await this.writeUnlocked(database)
+        if (next) await this.storage.set(this.key(sessionID), JSON.parse(JSON.stringify(next)))
+        else await this.storage.remove(this.key(sessionID))
 
         return structuredClone(next)
       } finally {

@@ -1,5 +1,3 @@
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { Plugin } from "@opencode/plugin"
 import type { PluginOptions } from "@opencode/plugin"
 import { GoalController } from "./controller"
@@ -11,18 +9,6 @@ const goalToolNames = new Set(["get_goal", "create_goal", "update_goal", "clear_
 const maxEvidenceCandidatesPerSession = 20
 
 const maxEvidenceCandidateSessions = 100
-
-function dataPath(options: PluginOptions): string {
-  if (options.dataFile) {
-    return options.dataFile.startsWith("~/")
-      ? join(homedir(), options.dataFile.slice(2))
-      : options.dataFile
-  }
-
-  const root = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share")
-
-  return join(root, "opencode-goal-plugin", "goals.json")
-}
 
 function formatGoalStatus(goal: Goal | undefined, evidenceCandidates: string[]): string {
   return JSON.stringify({
@@ -77,6 +63,8 @@ export default Plugin.define({
   setup: async (ctx) => {
     const options = ctx.options
 
+    if ("dataFile" in options) throw new Error("dataFile is no longer supported; goals use OpenCode plugin storage")
+
     const limits = {
       maxContinuations: configuredLimit("maxContinuations", options.maxContinuations, true),
       maxTokens: configuredLimit("maxTokens", options.maxTokens),
@@ -84,7 +72,12 @@ export default Plugin.define({
       noProgressTurns: configuredLimit("noProgressTurns", options.noProgressTurns, true),
     }
 
-    const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
+    const controller = new GoalController(new GoalStore(ctx.storage, {
+      projectID: ctx.location.project.id,
+      directory: ctx.location.directory,
+      workspaceID: ctx.location.workspaceID,
+    }), limits)
+
     const inFlight = new Set<string>()
     const admissionTokens = new Map<string, symbol>()
     const generations = new Map<string, symbol>()
