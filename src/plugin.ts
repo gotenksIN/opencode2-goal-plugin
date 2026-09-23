@@ -440,6 +440,11 @@ export default Plugin.define({
           if (item.done) break
           const event = item.value
 
+          if (event.type === "session.moved") {
+            cancelContinuation(event.data.sessionID)
+            continue
+          }
+
           if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
             const sessionID = event.data.sessionID
 

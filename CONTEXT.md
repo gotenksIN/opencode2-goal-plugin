@@ -363,6 +363,7 @@ The plugin automatically prompts the session agent after successful execution:
 
 - Subscription: Subscribes to the OpenCode event stream via `ctx.event.subscribe({ signal })`.
 - Handled events:
+  - `session.moved` cancels pending continuation work for the moved session; later execution events recheck ownership at the new location.
   - `session.execution.succeeded` settles the previous continuation and schedules the next prompt.
   - `session.execution.failed` pauses an active goal and cancels scheduled or pending continuation state.
   - `session.execution.interrupted` pauses an active goal and cancels scheduled or pending continuation state.
