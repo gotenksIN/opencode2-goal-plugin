@@ -148,9 +148,9 @@ export class GoalController {
     })
   }
 
-  account(sessionID: string, tokenEstimate: number, continuation = false, madeProgress = false): Promise<Goal | undefined> {
+  account(sessionID: string, tokenEstimate: number, continuation = false, madeProgress = false, createdAt?: string): Promise<Goal | undefined> {
     return this.store.update(sessionID, (goal) => {
-      if (!goal || goal.status !== "active") return goal
+      if (!goal || goal.status !== "active" || (createdAt !== undefined && goal.createdAt !== createdAt)) return goal
       const at = now()
       goal.updatedAt = at
       goal.tokenEstimate += Math.max(0, Math.round(tokenEstimate))

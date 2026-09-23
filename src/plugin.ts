@@ -86,9 +86,10 @@ export default Plugin.define({
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)
     const inFlight = new Set<string>()
     const admissionTokens = new Map<string, symbol>()
+    const generations = new Map<string, symbol>()
     const rescheduleAfterAdmission = new Set<string>()
     const scheduled = new Map<string, ReturnType<typeof setTimeout>>()
-    const pendingContinuations = new Map<string, number>()
+    const pendingContinuations = new Map<string, { before: number, createdAt: string, generation?: symbol }>()
     const evidenceCandidates = new Map<string, string[]>()
     const rejectedEvidenceCandidates = new Map<string, string[]>()
     let stopped = false
@@ -145,7 +146,10 @@ export default Plugin.define({
           // SAFETY: OpenCode decodes tool input against the create_goal schema, so objective is a non-empty string.
           const value = input as CreateGoalInput
 
-          return { content: JSON.stringify(await controller.create(toolCtx.sessionID, value.objective), null, 2) }
+          const created = await controller.create(toolCtx.sessionID, value.objective)
+          cancelContinuation(toolCtx.sessionID)
+
+          return { content: JSON.stringify(created, null, 2) }
         },
       })
       tools.add({
@@ -188,8 +192,9 @@ export default Plugin.define({
 
           if (value.action === "complete") evidenceCandidates.delete(toolCtx.sessionID)
 
+          if (value.action !== "resume") cancelContinuation(toolCtx.sessionID)
+
           if (value.action === "pause" || value.action === "blocked") {
-            pendingContinuations.delete(toolCtx.sessionID)
             await interruptSession(toolCtx.sessionID)
           }
 
@@ -204,7 +209,7 @@ export default Plugin.define({
         execute: async (_input, toolCtx) => {
           await controller.clear(toolCtx.sessionID)
           evidenceCandidates.delete(toolCtx.sessionID)
-          pendingContinuations.delete(toolCtx.sessionID)
+          cancelContinuation(toolCtx.sessionID)
           await interruptSession(toolCtx.sessionID)
 
           return { content: "Goal cleared." }
@@ -248,6 +253,8 @@ export default Plugin.define({
       const accounted = await controller.account(event.sessionID, estimateTokens(event.messages))
 
       if (!accounted) return
+
+      if (accounted.status === "usageLimited" || accounted.status === "budgetLimited") cancelContinuation(event.sessionID)
 
       const state = accounted.status === "active"
         ? "Continue work toward this goal. Use goal tools for every state change. Complete only with successful structured evidence."
@@ -322,6 +329,7 @@ export default Plugin.define({
     const continueGoal = async (sessionID: string) => {
       if (stopped || inFlight.has(sessionID)) return
       const admissionToken = Symbol(sessionID)
+      const generation = generations.get(sessionID)
 
       inFlight.add(sessionID)
       admissionTokens.set(sessionID, admissionToken)
@@ -330,14 +338,20 @@ export default Plugin.define({
         if (!(await ownsSession(sessionID))) return
         const goal = await controller.get(sessionID)
 
-        if (!goal || goal.status !== "active") return
+        if (!goal || goal.status !== "active" || generation !== generations.get(sessionID)) return
         const before = goal.progressCount ?? 0
         const stillOwned = await ownsSession(sessionID)
 
-        if (stopped || !stillOwned || admissionTokens.get(sessionID) !== admissionToken) return
-        pendingContinuations.set(sessionID, before)
+        if (stopped || !stillOwned || generation !== generations.get(sessionID) || admissionTokens.get(sessionID) !== admissionToken) return
+        const latest = await controller.get(sessionID)
+
+        if (!latest || latest.status !== "active" || latest.createdAt !== goal.createdAt
+          || generation !== generations.get(sessionID) || admissionTokens.get(sessionID) !== admissionToken) return
+
+        pendingContinuations.set(sessionID, { before, createdAt: goal.createdAt, generation })
 
         try {
+          // Once prompt admission starts, cancellation cannot retract a prompt that OpenCode accepts.
           await ctx.session.prompt({
             sessionID,
             text: "Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence.",
@@ -351,21 +365,28 @@ export default Plugin.define({
         if (admissionTokens.get(sessionID) === admissionToken) admissionTokens.delete(sessionID)
         inFlight.delete(sessionID)
 
-        if (rescheduleAfterAdmission.delete(sessionID)) await scheduleContinuation(sessionID)
+        if (rescheduleAfterAdmission.delete(sessionID) && generation === generations.get(sessionID)) await scheduleContinuation(sessionID)
       }
     }
 
     const settleContinuation = async (sessionID: string): Promise<void> => {
       if (!(await ownsSession(sessionID))) return
-      const before = pendingContinuations.get(sessionID)
+      const pending = pendingContinuations.get(sessionID)
 
-      if (before === undefined) return
+      if (!pending || pending.generation !== generations.get(sessionID)) return
       pendingContinuations.delete(sessionID)
       const goal = await controller.get(sessionID)
-      await controller.account(sessionID, 0, true, Boolean(goal && (goal.progressCount ?? 0) > before))
+
+      if (!goal || goal.createdAt !== pending.createdAt || pending.generation !== generations.get(sessionID)) return
+      const accounted = await controller.account(sessionID, 0, true, (goal.progressCount ?? 0) > pending.before, pending.createdAt)
+
+      if (accounted?.status === "usageLimited" || accounted?.status === "budgetLimited" || accounted?.status === "paused") {
+        cancelContinuation(sessionID)
+      }
     }
 
     const cancelContinuation = (sessionID: string): void => {
+      generations.set(sessionID, Symbol(sessionID))
       admissionTokens.delete(sessionID)
       rescheduleAfterAdmission.delete(sessionID)
       pendingContinuations.delete(sessionID)
@@ -383,15 +404,24 @@ export default Plugin.define({
         || inFlight.has(sessionID)
       ) return
 
+      const generation = generations.get(sessionID)
       const goal = await controller.get(sessionID)
 
       if (!goal || goal.status !== "active") return
       const owned = await ownsSession(sessionID)
 
-      if (stopped || !owned || scheduled.has(sessionID) || inFlight.has(sessionID)) return
+      if (stopped || !owned || scheduled.has(sessionID) || inFlight.has(sessionID)
+        || generation !== generations.get(sessionID)) return
+
+      const latest = await controller.get(sessionID)
+
+      if (!latest || latest.status !== "active" || latest.createdAt !== goal.createdAt
+        || generation !== generations.get(sessionID)) return
 
       const timer = setTimeout(() => {
         scheduled.delete(sessionID)
+
+        if (generation !== generations.get(sessionID)) return
         void continueGoal(sessionID).catch(() => undefined)
       }, Math.max(0, options.continuationIntervalMs ?? 1500))
 
@@ -429,7 +459,7 @@ export default Plugin.define({
           await settleContinuation(sessionID)
 
           if (inFlight.has(sessionID)) {
-            rescheduleAfterAdmission.add(sessionID)
+            if (admissionTokens.has(sessionID)) rescheduleAfterAdmission.add(sessionID)
             continue
           }
 
@@ -452,6 +482,7 @@ export default Plugin.define({
       for (const timer of scheduled.values()) clearTimeout(timer)
       scheduled.clear()
       admissionTokens.clear()
+      generations.clear()
       rescheduleAfterAdmission.clear()
       evidenceCandidates.clear()
       rejectedEvidenceCandidates.clear()

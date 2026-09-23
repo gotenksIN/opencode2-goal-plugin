@@ -373,6 +373,7 @@ The plugin automatically prompts the session agent after successful execution:
   - Recheck ownership immediately before prompt dispatch.
 - Turn settlement:
   - Check for a pending continuation on the session.
+  - Require the same goal creation timestamp and uncancelled generation before accounting; reject replacements within the store update.
   - Compare current `goal.progressCount` against the count stored before the turn.
   - Call `controller.account(sessionID, 0, true, madeProgress)` to advance counters and evaluate no-progress limits.
 - Debounce and concurrency guard:
@@ -382,10 +383,12 @@ The plugin automatically prompts the session agent after successful execution:
   - Track each active timer by session in `scheduled`.
 - Prompt dispatch:
   - Retrieve the persisted goal and verify status is `active`.
+  - Recheck goal identity and generation after asynchronous ownership checks.
   - Record the current `progressCount` in `pendingContinuations`.
   - Dispatch a prompt via `ctx.session.prompt`:
     - `text`: `"Continue the persisted goal from the latest checkpoint. Do not mark it complete without successful structured evidence."`
     - `metadata`: `{ plugin: "opencode.goal", continuation: goal.continuationCount + 1 }`.
+  - Cancellation cannot retract a prompt once `ctx.session.prompt` begins admission.
 - Subagent handling:
   - Query `ctx.session.get({ sessionID })`.
   - If `session.parentID` is present, the session is a subagent.
