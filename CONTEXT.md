@@ -362,6 +362,7 @@ The plugin injects active goal state into model context on each turn:
 The plugin automatically prompts the session agent after successful execution:
 
 - Subscription: Subscribes to the OpenCode event stream via `ctx.event.subscribe({ signal })`.
+- Store errors during one execution event are reported with the event type and session ID; the subscription processes subsequent events without retrying prompt admission.
 - Handled events:
   - `session.moved` cancels pending continuation work for the moved session; later execution events recheck ownership at the new location.
   - `session.execution.succeeded` settles the previous continuation and schedules the next prompt.

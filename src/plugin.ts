@@ -445,30 +445,36 @@ export default Plugin.define({
             continue
           }
 
-          if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+          if (event.type !== "session.execution.succeeded" && event.type !== "session.execution.failed"
+            && event.type !== "session.execution.interrupted") continue
+
+          try {
+            if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
+              const sessionID = event.data.sessionID
+
+              if (!(await ownsSession(sessionID))) continue
+              cancelContinuation(sessionID)
+              const detail = event.type === "session.execution.failed" ? event.data.error.message : event.data.reason
+              await controller.pauseAfterExecution(
+                sessionID,
+                event.type === "session.execution.failed" ? "failed" : "interrupted",
+                detail,
+              )
+              continue
+            }
+
             const sessionID = event.data.sessionID
+            await settleContinuation(sessionID)
 
-            if (!(await ownsSession(sessionID))) continue
-            cancelContinuation(sessionID)
-            const detail = event.type === "session.execution.failed" ? event.data.error.message : event.data.reason
-            await controller.pauseAfterExecution(
-              sessionID,
-              event.type === "session.execution.failed" ? "failed" : "interrupted",
-              detail,
-            )
-            continue
+            if (inFlight.has(sessionID)) {
+              if (admissionTokens.has(sessionID)) rescheduleAfterAdmission.add(sessionID)
+              continue
+            }
+
+            await scheduleContinuation(sessionID)
+          } catch (error) {
+            console.error(`Goal event ${event.type} for session ${event.data.sessionID} failed; inspect the goal store before retrying:`, error)
           }
-
-          if (event.type !== "session.execution.succeeded") continue
-          const sessionID = event.data.sessionID
-          await settleContinuation(sessionID)
-
-          if (inFlight.has(sessionID)) {
-            if (admissionTokens.has(sessionID)) rescheduleAfterAdmission.add(sessionID)
-            continue
-          }
-
-          await scheduleContinuation(sessionID)
         }
       } catch {
         if (!stopped) return
