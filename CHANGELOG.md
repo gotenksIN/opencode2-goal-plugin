@@ -2,6 +2,15 @@
 
 All notable changes to `opencode2-goal-plugin` are documented in this file.
 
+## 1.0.8 (2026-09-23)
+
+- Store session goals in scoped OpenCode V2 plugin storage instead of a JSON file, with local cross-process locks for updates.
+- Do not import goals from older JSON files; remove the obsolete `dataFile` option before loading this version.
+- Make continuation, token, duration, and no-progress limits opt-in.
+- Cancel pending continuations when goals change state or sessions move, and continue handling events after a storage failure.
+- Reject empty Code Mode tool calls as completion evidence.
+- Update the OpenCode V2 plugin dependency and Bun development tools.
+
 ## 1.0.7 (2026-09-15)
 
 - Update `@opencode/plugin` to `2.0.3` and refresh development dependencies.
