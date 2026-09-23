@@ -122,10 +122,10 @@ export interface GoalDatabase {
 }
 
 export interface GoalLimits {
-  maxContinuations: number
-  maxTokens: number
-  maxDurationMs: number
-  noProgressTurns: number
+  maxContinuations?: number
+  maxTokens?: number
+  maxDurationMs?: number
+  noProgressTurns?: number
 }
 
 export interface PluginOptions {
@@ -139,13 +139,11 @@ export interface PluginOptions {
 }
 ```
 
-Default limit values:
-
-- `maxContinuations`: `12`
-- `maxTokens`: `120_000`
-- `maxDurationMs`: `3_600_000` (1 hour)
-- `noProgressTurns`: `3`
-- `continuationIntervalMs`: `1500`
+All exhaustion limits are disabled unless explicitly configured.
+Configure positive integers for continuation and no-progress limits, and finite non-negative numbers for token and duration limits.
+Invalid configured limits are rejected.
+`continuationIntervalMs` defaults to `1500`.
+The token counter sums approximate request context lengths, not provider billing or context limits.
 
 ## Goal state machine
 
@@ -235,7 +233,7 @@ resume │   ┌──────────┘   │   └──────�
    - Increments `continuationCount` when `continuation` is `true`.
    - Updates `noProgressCount`: resets to `0` when `madeProgress` is `true`, or increments by `1` on continuation.
    - Calculates total elapsed active time (`activeTimeMs` plus current active slice).
-   - Evaluates limit boundaries in order:
+   - Evaluates only configured limit boundaries in order:
      1. If `tokenEstimate >= limits.maxTokens`, sets status to `usageLimited`.
      2. Else if `elapsed >= limits.maxDurationMs` or `continuationCount >= limits.maxContinuations`, sets status to `budgetLimited`.
      3. Else if `noProgressCount >= limits.noProgressTurns`, sets status to `paused` with action `"no-progress-pause"`.

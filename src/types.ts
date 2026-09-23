@@ -77,8 +77,8 @@ export interface GoalDatabase {
 }
 
 export interface GoalLimits {
-  maxContinuations: number
-  maxTokens: number
-  maxDurationMs: number
-  noProgressTurns: number
+  maxContinuations?: number
+  maxTokens?: number
+  maxDurationMs?: number
+  noProgressTurns?: number
 }

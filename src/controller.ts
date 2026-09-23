@@ -2,13 +2,6 @@ import type { EvidenceInput, Goal, GoalLimits, GoalStatus, GoalUpdateDetail } fr
 import { evidenceSources } from "./types"
 import { GoalStore } from "./store"
 
-export const defaultLimits: GoalLimits = {
-  maxContinuations: 12,
-  maxTokens: 120_000,
-  maxDurationMs: 60 * 60 * 1000,
-  noProgressTurns: 3,
-}
-
 const now = () => new Date().toISOString()
 
 function stopActiveClock(goal: Goal, at: string): void {
@@ -50,7 +43,7 @@ function validateEvidence(value: ReturnType<typeof JSON.parse>): EvidenceInput {
 }
 
 export class GoalController {
-  constructor(readonly store: GoalStore, readonly limits: GoalLimits = defaultLimits) {}
+  constructor(readonly store: GoalStore, readonly limits: GoalLimits = {}) {}
 
   get(sessionID: string): Promise<Goal | undefined> {
     return this.store.get(sessionID)
@@ -167,9 +160,10 @@ export class GoalController {
       const elapsed = goal.activeTimeMs + (goal.activeSince ? Date.parse(at) - Date.parse(goal.activeSince) : 0)
       let limited: GoalStatus | undefined
 
-      if (goal.tokenEstimate >= this.limits.maxTokens) limited = "usageLimited"
-      else if (elapsed >= this.limits.maxDurationMs || goal.continuationCount >= this.limits.maxContinuations) limited = "budgetLimited"
-      else if (goal.noProgressCount >= this.limits.noProgressTurns) limited = "paused"
+      if (this.limits.maxTokens !== undefined && goal.tokenEstimate >= this.limits.maxTokens) limited = "usageLimited"
+      else if ((this.limits.maxDurationMs !== undefined && elapsed >= this.limits.maxDurationMs)
+        || (this.limits.maxContinuations !== undefined && goal.continuationCount >= this.limits.maxContinuations)) limited = "budgetLimited"
+      else if (this.limits.noProgressTurns !== undefined && goal.noProgressCount >= this.limits.noProgressTurns) limited = "paused"
 
       if (limited) {
         stopActiveClock(goal, at)

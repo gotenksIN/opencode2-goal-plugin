@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { Plugin } from "@opencode/plugin"
 import type { PluginOptions } from "@opencode/plugin"
-import { GoalController, defaultLimits } from "./controller"
+import { GoalController } from "./controller"
 import { GoalStore } from "./store"
 import type { CreateGoalInput, Goal, UpdateGoalInput } from "./types"
 
@@ -38,12 +38,14 @@ function estimateTokens(messages: ReadonlyArray<object>): number {
   try { return Math.ceil(JSON.stringify(messages).length / 4) } catch { return 0 }
 }
 
-function finiteNonNegative(value: PluginOptions[string], fallback: number): number {
-  return Number.isFinite(value) && value >= 0 ? value : fallback
-}
+function configuredLimit(name: string, value: PluginOptions[string], integer = false): number | undefined {
+  if (value === undefined) return undefined
 
-function positiveInteger(value: PluginOptions[string], fallback: number): number {
-  return Math.max(1, Math.floor(finiteNonNegative(value, fallback)))
+  if (!Number.isFinite(value) || value < 0 || (integer && (!Number.isInteger(value) || value === 0))) {
+    throw new Error(`${name} must be ${integer ? "a positive integer" : "a finite non-negative number"}`)
+  }
+
+  return value
 }
 
 function structuredToolOutputSucceeded(tool: "shell" | "execute", output: ReturnType<typeof JSON.parse>): boolean {
@@ -75,10 +77,10 @@ export default Plugin.define({
     const options = ctx.options
 
     const limits = {
-      maxContinuations: positiveInteger(options.maxContinuations, defaultLimits.maxContinuations),
-      maxTokens: finiteNonNegative(options.maxTokens, defaultLimits.maxTokens),
-      maxDurationMs: finiteNonNegative(options.maxDurationMs, defaultLimits.maxDurationMs),
-      noProgressTurns: positiveInteger(options.noProgressTurns, defaultLimits.noProgressTurns),
+      maxContinuations: configuredLimit("maxContinuations", options.maxContinuations, true),
+      maxTokens: configuredLimit("maxTokens", options.maxTokens),
+      maxDurationMs: configuredLimit("maxDurationMs", options.maxDurationMs),
+      noProgressTurns: configuredLimit("noProgressTurns", options.noProgressTurns, true),
     }
 
     const controller = new GoalController(new GoalStore(dataPath(options), !options.dataFile), limits)

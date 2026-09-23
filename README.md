@@ -16,11 +16,7 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
       "package": "opencode2-goal-plugin@1.0.7",
       "options": {
         "autoContinue": true,
-        "maxContinuations": 12,
         "continuationIntervalMs": 1500,
-        "maxDurationMs": 3600000,
-        "maxTokens": 120000,
-        "noProgressTurns": 3,
         "dataFile": "~/.local/share/opencode-goal-plugin/goals.json"
       }
     }
@@ -33,11 +29,11 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
 You can configure the following options:
 
 - `autoContinue`: Enables automatic continuation after successful session execution. Defaults to `true`.
-- `maxContinuations`: Sets the maximum number of automatic continuation turns. Defaults to `12`.
+- `maxContinuations`: Sets the maximum number of automatic continuation turns. Disabled unless you configure a positive integer.
 - `continuationIntervalMs`: Sets the delay in milliseconds before an automatic continuation prompt. Defaults to `1500`.
-- `maxDurationMs`: Sets the maximum active execution time in milliseconds before setting status to `budgetLimited`. Defaults to `3600000` (1 hour).
-- `maxTokens`: Sets the maximum estimated context token count before setting status to `usageLimited`. Defaults to `120000`.
-- `noProgressTurns`: Sets the maximum consecutive continuation turns without file edits before pausing the goal. Defaults to `3`.
+- `maxDurationMs`: Sets the maximum active execution time in milliseconds before setting status to `budgetLimited`. Disabled unless you configure a finite non-negative number.
+- `maxTokens`: Sets the maximum estimated context token count before setting status to `usageLimited`. Disabled unless you configure a finite non-negative number.
+- `noProgressTurns`: Sets the maximum consecutive continuation turns without file edits before pausing the goal. Disabled unless you configure a positive integer.
 - `dataFile`: Specifies a custom file path for the goal database. Defaults to `${XDG_DATA_HOME:-~/.local/share}/opencode-goal-plugin/goals.json`.
 
 ## Commands
@@ -109,11 +105,12 @@ It applies permissions of `0700` for created directories and `0600` for files on
 Existing custom directories retain their original permissions.
 
 Each goal record contains timestamps, active duration, continuation counts, checkpoints, history entries, and approximate token estimates.
-The plugin estimates token usage from serialized context messages divided by four.
+The token counter sums approximate request context lengths, estimated from serialized context messages divided by four.
+This estimate does not reflect provider billing or context limits.
 
 The plugin triggers automatic continuation after successful session execution.
 It pauses an active goal after terminal execution failure or interruption until you resume it.
-It checks limits before and during continuation:
+It checks only limits that you explicitly configure before and during continuation:
 
 - Reaching `maxTokens` sets goal status to `usageLimited`.
 - Reaching `maxDurationMs` or `maxContinuations` sets goal status to `budgetLimited`.
