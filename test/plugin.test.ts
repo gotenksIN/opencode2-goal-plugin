@@ -505,7 +505,7 @@ describe("auto continuation", () => {
     await harness.cleanup?.()
   })
 
-  test("ignores execution events for sessions owned by another plugin location", async () => {
+  test("tracks another directory but ignores another project", async () => {
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       await new Promise((resolve) => setTimeout(resolve, 10))
       yield { type: "session.execution.succeeded", data: { sessionID: "foreign-location" } }
@@ -523,30 +523,30 @@ describe("auto continuation", () => {
       foreignProjectSessions: new Set(["foreign-project"]),
     })
 
-    await harness.tool("create_goal").execute({ objective: "Stay local" }, { sessionID: "foreign-location" })
+    await harness.tool("create_goal").execute({ objective: "Follow directory moves" }, { sessionID: "foreign-location" })
     await harness.tool("create_goal").execute({ objective: "Stay active" }, { sessionID: "foreign-project" })
     await new Promise((resolve) => setTimeout(resolve, 40))
 
-    expect(harness.prompts).toEqual([])
+    expect(harness.prompts.map((prompt) => prompt.sessionID)).toEqual(["foreign-location"])
     const result = await harness.tool("get_goal").execute({}, { sessionID: "foreign-project" })
     expect(JSON.parse(result.content).goal.status).toBe("active")
     await harness.cleanup?.()
   })
 
   test("rechecks session ownership before dispatching a continuation", async () => {
-    const foreignLocationSessions = new Set<string>()
+    const foreignProjectSessions = new Set<string>()
 
     async function* eventGenerator(): AsyncGenerator<HarnessEvent> {
       await new Promise((resolve) => setTimeout(resolve, 10))
       yield { type: "session.execution.succeeded", data: { sessionID: "moved" } }
-      foreignLocationSessions.add("moved")
+      foreignProjectSessions.add("moved")
     }
 
     const harness = await setupPlugin("foreign-dispatch", {
       autoContinue: true,
       continuationIntervalMs: 20,
       events: eventGenerator(),
-      foreignLocationSessions,
+      foreignProjectSessions,
     })
 
     await harness.tool("create_goal").execute({ objective: "Do not follow" }, { sessionID: "moved" })

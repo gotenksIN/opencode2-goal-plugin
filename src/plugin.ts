@@ -97,7 +97,6 @@ export const createGoalPlugin = (lockDirectory?: string) => Plugin.define({
         const workspaceID = "workspaceID" in session.location ? session.location.workspaceID : undefined
 
         return session.projectID === ctx.location.project.id
-          && session.location.directory === ctx.location.directory
           && workspaceID === ctx.location.workspaceID
       } catch {
         return false
