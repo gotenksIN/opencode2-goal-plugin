@@ -2,6 +2,11 @@
 
 All notable changes to `opencode2-goal-plugin` are documented in this file.
 
+## 1.0.9 (2026-10-02)
+
+- Match session ownership by project and workspace, allowing goal tracking and auto-continuation across directory moves and worktrees within the project.
+- Update `@opencode/plugin` to `2.0.21` and update Oxlint dependencies to `1.86.0`.
+
 ## 1.0.8 (2026-09-23)
 
 - Store session goals in scoped OpenCode V2 plugin storage instead of a JSON file, with local cross-process locks for updates.
